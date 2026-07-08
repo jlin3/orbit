@@ -1,0 +1,9 @@
+# personal data — never commit
+data.json
+data.json.tmp
+backups/
+
+# noise
+*.log
+.DS_Store
+node_modules/

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Orbit</title>
+  <meta name="description" content="Fewer people, deeper bonds. A personal relationship manager.">
+  <script>
+    const t = localStorage.getItem('orbit-theme')
+      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.dataset.theme = t;
+  </script>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f1e8">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16130e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Orbit">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <svg width="24" height="24" viewBox="0 0 100 100"><circle class="o-ring" cx="50" cy="50" r="36" fill="none" stroke-width="12"/><circle class="o-moon" cx="50" cy="11" r="11"/></svg>
+        Orbit
+      </div>
+      <nav id="nav">
+        <a href="#today" data-view="today">Today <span class="count" id="dueCount" hidden></span></a>
+        <a href="#people" data-view="people">People</a>
+        <a href="#dating" data-view="dating">Dating</a>
+        <a href="#ideas" data-view="ideas">Ideas</a>
+        <a href="#plans" data-view="plans">Plans</a>
+        <a href="#digest" data-view="digest">Digest</a>
+        <a href="#connect" data-view="connect">Connect</a>
+      </nav>
+      <div class="tools">
+        <span class="sync-dot" id="syncDot" hidden title="Synced"></span>
+        <button class="kbd-hint" id="paletteBtn" title="Command palette">⌘K</button>
+        <button class="icon-btn" id="themeBtn" title="Toggle theme">☾</button>
+        <button class="icon-btn" id="settingsBtn" title="Profile & settings">✦</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <nav id="tabbar">
+    <a href="#today" data-view="today"><span class="ti">☀︎</span>Today<span class="tab-badge" id="tabDue" hidden></span></a>
+    <a href="#people" data-view="people"><span class="ti">◉</span>People</a>
+    <a href="#dating" data-view="dating"><span class="ti">♥︎</span>Dating</a>
+    <a href="#ideas" data-view="ideas"><span class="ti">✧</span>Ideas</a>
+    <button id="moreTab"><span class="ti">≡</span>More</button>
+  </nav>
+
+  <dialog id="personDialog"></dialog>
+  <dialog id="planDialog"></dialog>
+  <dialog id="ideaDialog"></dialog>
+  <dialog id="wizardDialog"></dialog>
+  <dialog id="paletteDialog"></dialog>
+  <dialog id="moreSheet" class="sheet"></dialog>
+
+  <div id="toast"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
