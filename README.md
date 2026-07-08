@@ -1,52 +1,39 @@
 # Orbit
 
 A personal relationship manager built around one principle: **fewer people, deeper bonds.**
-Local-first, zero dependencies, all data in one JSON file you own.
+Zero dependencies, no build step. One codebase runs two ways:
 
-## Run it
-
-```sh
-node ~/orbit/server.js
-# → http://localhost:4747
-```
-
-Or enable **Always-on** in the app's Connect tab (installs a LaunchAgent that starts Orbit
-at login).
+- **Local (Mac):** `node server.js` → http://localhost:4747 — full API: contacts import,
+  calendar feed, launch agent, daily-agent endpoints. Data in `data.json` (gitignored).
+- **Web (PWA):** the same `docs/` folder served statically (GitHub Pages) — data lives in
+  the browser, with optional **end-to-end encrypted sync** through a private GitHub gist
+  (AES-GCM, key derived from a passphrase via PBKDF2; GitHub only ever stores ciphertext).
 
 ## The system
 
-- **Onboarding wizard** — first launch collects your profile: interests, neighborhoods,
-  social budget (hangs/week), preferred nights, dating mode, date styles. Everything
-  downstream (event search, idea matching, Today stats) keys off it. Re-open via ✦.
-- **Tiers with cadences** — Inner circle (7d), Close (21d), Keep warm (60d). Anyone past
-  their cadence shows up on **Today** under "Reach out" with a matched activity idea.
-- **Triage** — paste any list, or one-click import Apple Contacts, then sort with keys
-  `1`/`2`/`3`/`X`. Cutting archives (history kept).
-- **Dating pipeline** — drag cards through New → Talking → Going on dates → Serious;
-  5-day cadence, "next step" on every card.
-- **Ideas** — NYC activity/date bank tagged by vibe; "Plan it →" schedules it with someone.
-- **Plans** — marking done auto-logs contact for everyone on it; feeds a calendar
-  subscription (`/api/calendar.ics`).
-- **Digest** — daily summary at `/api/digest`, delivered every morning at 8 by a
-  scheduled agent that also pulls in NYC events matched to your profile.
-- **Connect tab** — one-click contacts import, Apple Calendar subscription, always-on
-  LaunchAgent, Gmail delivery guidance, JSON export.
+- **Onboarding wizard** (✦) — interests, neighborhoods, social budget, nights out, dating
+  mode, date styles. Everything downstream keys off this profile.
+- **Tiers with cadences** — Inner (7d) / Close (21d) / Keep warm (60d); overdue people
+  surface on Today with a matched activity idea. Dating pipeline runs a faster 5d cadence.
+- **The constellation** — Today's header draws your circle as dots on orbit rings;
+  overdue people pulse. Click a dot to open them.
+- **Triage** — paste any list (or import Apple Contacts locally) and sort with `1`/`2`/`3`/`X`.
+- **Reach-out channels** — per-person handles power one-tap drafts into **Messages,
+  WhatsApp, Instagram, X** (draft copied + right app opened).
+- **Plans** — every plan has a one-click **Google Calendar** button; marking done
+  auto-logs contact for everyone on it. Local mode also serves an iCal feed.
+- **Digest** — daily 8am agent (Claude scheduled task on the Mac) pulls NYC events
+  matched to the profile, loads them into Orbit, and delivers the digest by **Slack
+  webhook** and/or email.
+- **Design** — light/dark, View Transitions, ⌘K palette, bottom tab bar + safe areas on
+  mobile, spring micro-interactions, drag-and-drop pipeline, `prefers-reduced-motion`
+  respected. Installable PWA (manifest + service worker + offline shell).
 
-## Design / UI
+## API (local mode, used by the daily agent)
 
-Vanilla JS + CSS, no build step. Light/dark themes (`☾`), View Transitions between tabs,
-⌘K command palette, drag-and-drop pipeline, spring micro-interactions, staggered reveals,
-`prefers-reduced-motion` respected.
+- `GET  /api/digest` · `POST /api/events` · `GET /api/calendar.ics`
+- `GET  /api/connections` · `POST /api/import/macos-contacts` · `POST /api/setup/launchagent`
+- `GET/PUT /api/state`
 
-## API (used by the daily agent)
-
-- `GET  /api/digest` — full digest as JSON + rendered markdown
-- `POST /api/events` — `{"events": [...]}` replaces the NYC events on Today / in the digest
-- `GET  /api/calendar.ics` — iCal feed of upcoming plans
-- `GET  /api/connections` — integration status (launch agent, digest task, platform)
-- `POST /api/import/macos-contacts` — reads Contacts via osascript (permission prompt)
-- `POST /api/setup/launchagent` — `{"enable": true|false}` installs/removes always-on
-- `GET/PUT /api/state` — full app state
-
-Data lives in `data.json` (daily backups in `backups/`). `seed.json` is the fresh-install
-template.
+`docs/seed.json` is the fresh-install template (fictional sample people only —
+real data never leaves `data.json` / the browser / the encrypted gist).
