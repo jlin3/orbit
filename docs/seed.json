@@ -18,6 +18,7 @@
       "notes": "College roommate's sister. Lives in Fort Greene. Always down for a late show.",
       "nextStep": "",
       "handles": { "phone": "+1 347 555 0142" }, "preferredChannel": "messages",
+      "threads": [{ "id": "t_maya1", "text": "How was the Portugal trip?", "createdAt": "2026-06-25", "done": false }],
       "lastContact": "2026-06-25",
       "snoozedUntil": null,
       "createdAt": "2026-07-05",

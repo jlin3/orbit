@@ -79,6 +79,37 @@ function suggestIdea(person, ideas) {
   return list.find(i => i.favorite) || list[0] || null;
 }
 
+function weekSuggestions(state) {
+  const prof = (state.settings.profile || {});
+  const nights = prof.nights && prof.nights.length ? prof.nights : ['Thu', 'Fri', 'Sat'];
+  const dayName = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+  const planned = new Set((state.plans || []).filter(pl => pl.status !== 'done').map(pl => pl.date));
+  const tierW = p => p.type === 'dating' ? 3 : ({ inner: 3, close: 2, warm: 1 }[p.tier] || 1);
+  const today = localISO();
+  const cands = state.people
+    .filter(p => p.tier !== 'archived' && p.tier !== 'unsorted')
+    .map(p => {
+      const cad = cadenceFor(p, state.settings);
+      if (!cad) return null;
+      const overdue = daysBetween(addDays(p.lastContact || p.createdAt || today, cad), today);
+      return { p, overdue };
+    })
+    .filter(x => x && !(x.p.snoozedUntil && x.p.snoozedUntil > today))
+    .sort((a, b) => (b.overdue * tierW(b.p)) - (a.overdue * tierW(a.p)));
+  const used = new Set();
+  const out = [];
+  for (let i = 1; i <= 14 && out.length < 3; i++) {
+    const d = addDays(today, i);
+    if (!nights.includes(dayName(d)) || planned.has(d)) continue;
+    const c = cands.find(x => !used.has(x.p.id));
+    if (!c) break;
+    used.add(c.p.id);
+    const idea = suggestIdea(c.p, state.ideas || []);
+    out.push({ date: d, name: c.p.name, idea: idea ? `${idea.title} (${idea.hood || 'NYC'})` : null });
+  }
+  return out;
+}
+
 function computeDigest(state) {
   const today = localISO();
   const horizon = addDays(today, 7);
@@ -93,6 +124,7 @@ function computeDigest(state) {
     const nextDue = addDays(last, cadence);
     if (nextDue <= today) {
       const idea = suggestIdea(p, state.ideas || []);
+      const thread = (p.threads || []).find(t => !t.done) || null;
       due.push({
         name: p.name, tier: p.tier, type: p.type, stage: p.stage || null,
         overdueDays: daysBetween(nextDue, today),
@@ -100,6 +132,7 @@ function computeDigest(state) {
         nextStep: p.nextStep || null,
         interests: p.interests || [],
         idea: idea ? idea.title : null,
+        thread: thread ? thread.text : null,
       });
     }
   }
@@ -134,7 +167,13 @@ function computeDigest(state) {
   if (due.length === 0) lines.push('All caught up — nobody is overdue.');
   for (const d of due) {
     const label = d.type === 'dating' ? `dating · ${d.stage}` : d.tier;
-    lines.push(`- **${d.name}** (${label}) — ${d.overdueDays === 0 ? 'due today' : `${d.overdueDays}d overdue`}${d.lastContact ? `, last contact ${d.lastContact}` : ''}${d.nextStep ? `. Next step: ${d.nextStep}` : d.idea ? `. Idea: ${d.idea}` : ''}`);
+    lines.push(`- **${d.name}** (${label}) — ${d.overdueDays === 0 ? 'due today' : `${d.overdueDays}d overdue`}${d.lastContact ? `, last contact ${d.lastContact}` : ''}${d.thread ? `. 💭 ${d.thread}` : d.nextStep ? `. Next step: ${d.nextStep}` : d.idea ? `. Idea: ${d.idea}` : ''}`);
+  }
+  const sugs = weekSuggestions(state);
+  if (sugs.length) {
+    lines.push('');
+    lines.push('## Line up your week');
+    for (const s of sugs) lines.push(`- ${s.date} — **${s.name}**${s.idea ? ` · ${s.idea}` : ''}`);
   }
   if (birthdays.length) {
     lines.push('');

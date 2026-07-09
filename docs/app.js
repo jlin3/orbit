@@ -60,6 +60,10 @@ function normalizeState() {
   S.settings.integrations = S.settings.integrations || {};
   S.meta = S.meta || { updatedAt: 0 };
   S.events = S.events || [];
+  S.streaks = S.streaks || { focusDays: 0, bestFocus: 0, lastFocusDate: null, lastReviewDate: null };
+  S.history = S.history || [];
+  S.focus = S.focus || null;
+  for (const p of S.people) p.threads = p.threads || [];
   const seedHandles = {
     p_maya: [{ phone: '+1 347 555 0142' }, 'messages'],
     p_jordan: [{ phone: '+1 917 555 0188' }, 'whatsapp'],
@@ -290,6 +294,133 @@ function logContact(p, kind, note, date) {
   p.snoozedUntil = null;
 }
 
+// ---------- intelligence: threads, focus, score, suggestions ----------
+function tierWeight(p) {
+  return p.type === 'dating' ? 3 : ({ inner: 3, close: 2, warm: 1 }[p.tier] || 1);
+}
+function openThread(p) {
+  return (p.threads || []).find(t => !t.done) || null;
+}
+
+function nextFreeNights(count = 3) {
+  const prof = S.settings.profile || {};
+  const nights = prof.nights?.length ? prof.nights : ['Thu', 'Fri', 'Sat'];
+  const dayName = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+  const planned = new Set((S.plans || []).filter(pl => pl.status !== 'done').map(pl => pl.date));
+  const out = [];
+  for (let i = 1; i <= 14 && out.length < count; i++) {
+    const d = addDays(todayIso(), i);
+    if (nights.includes(dayName(d)) && !planned.has(d)) out.push(d);
+  }
+  return out;
+}
+
+function planSuggestions(n = 3) {
+  const nights = nextFreeNights(n);
+  const cands = activePeople().map(p => ({ p, d: dueInfo(p) }))
+    .filter(x => x.d && !x.d.snoozed)
+    .sort((a, b) => (b.d.overdue * tierWeight(b.p)) - (a.d.overdue * tierWeight(a.p)));
+  const used = new Set();
+  return nights.map(date => {
+    const c = cands.find(x => !used.has(x.p.id));
+    if (!c) return null;
+    used.add(c.p.id);
+    return { person: c.p, idea: suggestIdea(c.p), date };
+  }).filter(Boolean);
+}
+
+function plansThisWeek() {
+  const ws = startOfWeek();
+  return (S.plans || []).filter(pl => pl.date >= ws && pl.date <= addDays(ws, 6));
+}
+
+function orbitScore() {
+  const act = activePeople();
+  if (!act.length) return 100;
+  let wSum = 0, wOk = 0;
+  for (const p of act) {
+    const w = tierWeight(p);
+    const d = dueInfo(p);
+    wSum += w;
+    if (!d || d.snoozed || d.overdue < 0) wOk += w;
+  }
+  const onTrack = wSum ? wOk / wSum : 1;
+  const prof = S.settings.profile || {};
+  const hangs = plansThisWeek().length;
+  const budget = prof.socialBudget ? Math.min(1, hangs / prof.socialBudget) : (hangs > 0 ? 1 : 0.6);
+  return Math.round(100 * (0.65 * onTrack + 0.35 * budget));
+}
+
+function snapshotHistory() {
+  const today = todayIso();
+  const last = S.history[S.history.length - 1];
+  if (last?.date === today) { last.score = orbitScore(); return; }
+  S.history.push({ date: today, score: orbitScore() });
+  if (S.history.length > 90) S.history = S.history.slice(-90);
+}
+
+function sparklineSvg() {
+  const vals = S.history.slice(-30).map(h => h.score);
+  if (vals.length < 2) return '';
+  const w = 72, h = 22;
+  const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
+  const pts = vals.map((v, i) =>
+    `${(i / (vals.length - 1) * w).toFixed(1)},${(h - 2 - (v - min) / span * (h - 4)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts}"/></svg>`;
+}
+
+let focusPending = null; // focus item awaiting a plan-dialog save
+
+function generateFocus() {
+  const today = todayIso();
+  if (S.focus?.date === today && S.focus.items?.length) return S.focus;
+  const ranked = duePeople()
+    .sort((a, b) => (b.d.overdue * tierWeight(b.p)) - (a.d.overdue * tierWeight(a.p)));
+  const items = [];
+  const used = new Set();
+  const takeDue = (pred, kind) => {
+    const c = ranked.find(x => !used.has(x.p.id) && pred(x));
+    if (c) { used.add(c.p.id); items.push({ id: uid(), personId: c.p.id, kind, done: false, skipped: false }); }
+  };
+  takeDue(() => true, 'reachout');
+  takeDue(x => x.p.type === 'dating' && x.p.nextStep, 'nextstep');
+  const sug = planSuggestions(3).find(s => !used.has(s.person.id));
+  if (sug && items.length) {
+    used.add(sug.person.id);
+    items.push({ id: uid(), personId: sug.person.id, kind: 'plan', ideaId: sug.idea?.id || null, date: sug.date, done: false, skipped: false });
+  }
+  while (items.length < 3) {
+    const c = ranked.find(x => !used.has(x.p.id));
+    if (!c) break;
+    used.add(c.p.id);
+    items.push({ id: uid(), personId: c.p.id, kind: 'reachout', done: false, skipped: false });
+  }
+  S.focus = { date: today, items: items.slice(0, 3), celebrated: false };
+  persist();
+  return S.focus;
+}
+
+function checkFocusComplete() {
+  const f = S.focus;
+  if (!f || f.celebrated) return;
+  const open = f.items.filter(i => !i.done && !i.skipped);
+  if (open.length || !f.items.some(i => i.done)) return;
+  f.celebrated = true;
+  const y = addDays(todayIso(), -1);
+  S.streaks.focusDays = S.streaks.lastFocusDate === y ? S.streaks.focusDays + 1 : 1;
+  S.streaks.lastFocusDate = todayIso();
+  S.streaks.bestFocus = Math.max(S.streaks.bestFocus || 0, S.streaks.focusDays);
+  persist();
+  confetti(40);
+  toast(`Today's three — done. 🔥 ${S.streaks.focusDays}-day streak`);
+}
+
+function maybeCompleteFocus(personId) {
+  const item = S.focus?.date === todayIso()
+    && S.focus.items.find(i => i.personId === personId && !i.done && !i.skipped && i.kind !== 'plan');
+  if (item) { item.done = true; checkFocusComplete(); }
+}
+
 function channelsFor(p) {
   const h = p.handles || {};
   return Object.entries(CHANNELS).filter(([, c]) => (h[c.needs] || '').trim());
@@ -300,6 +431,12 @@ function chStrip(p) {
 }
 function draftFor(p) {
   const first = p.name.split(' ')[0];
+  const th = openThread(p);
+  if (th) {
+    return /\?$/.test(th.text.trim())
+      ? `Hey ${first} — ${th.text.trim().charAt(0).toLowerCase() + th.text.trim().slice(1)}`
+      : `Hey ${first} — been meaning to ask: ${th.text.trim()}?`;
+  }
   const idea = suggestIdea(p);
   if (p.type === 'dating') return `Hey ${first} — ${idea ? idea.title.toLowerCase() : 'drinks'} this week?`;
   return `Yo ${first} — been too long! ${idea ? idea.title + '?' : 'Free this week?'}`;
@@ -445,6 +582,7 @@ function dueRow({ p, d }, i) {
     <div class="who">
       <div class="name">${esc(p.name)} ${label} <span class="chip overdue">${overdueTxt}</span></div>
       <div class="meta">${lastTxt}${ideaTxt}</div>
+      ${openThread(p) ? `<div class="next-step">💭 ${esc(openThread(p).text)}</div>` : ''}
       ${p.nextStep ? `<div class="next-step">→ ${esc(p.nextStep)}</div>` : ''}
     </div>
     <div class="actions">
@@ -509,12 +647,63 @@ VIEWS.today = function renderToday() {
   const hello = prof.firstName ? `, ${esc(prof.firstName)}` : '';
   const hour = new Date().getHours();
 
+  const focus = generateFocus();
+  const focusItems = focus.items.filter(i => !i.skipped);
+  const focusDone = focusItems.filter(i => i.done).length;
+  const score = orbitScore();
+  const streak = S.streaks.focusDays || 0;
+
+  const dow = new Date().getDay(); // 0 Sun, 1 Mon
+  const reviewedThisWeek = S.streaks.lastReviewDate && S.streaks.lastReviewDate >= startOfWeek();
+  const showReviewBanner = (dow === 0 || dow === 1) && !reviewedThisWeek && act.length > 0;
+
+  const sugs = prof.socialBudget && hangsThisWeek < prof.socialBudget
+    ? planSuggestions(Math.min(3, prof.socialBudget - hangsThisWeek))
+    : [];
+
+  const focusCard = (item, i) => {
+    const p = person(item.personId);
+    if (!p) return '';
+    const th = openThread(p);
+    const idea = item.ideaId ? S.ideas.find(x => x.id === item.ideaId) : suggestIdea(p);
+    const heads = {
+      reachout: `Reach out to <b>${esc(p.name)}</b>`,
+      nextstep: `Next step with <b>${esc(p.name)}</b>`,
+      plan: `Lock in ${fmtDay(item.date || todayIso())} night`,
+    };
+    const subs = {
+      reachout: th ? `💭 ${esc(th.text)}` : `It's been a while — draft's ready, one tap.`,
+      nextstep: `→ ${esc(p.nextStep || '')}`,
+      plan: `<b>${esc(p.name)}</b>${idea ? ` · ${esc(idea.title)}` : ''} — your night's free.`,
+    };
+    const acts = item.kind === 'plan'
+      ? `<button class="btn tiny accent" data-act="focusPlan" data-id="${item.id}">Plan it →</button>`
+      : `<span class="ch-strip">${chStrip(p)}</span>
+         <button class="btn tiny accent" data-act="focusLog" data-id="${item.id}">✓ Did it</button>`;
+    return `<div class="focus-card spot rise ${item.done ? 'done' : ''}" style="--i:${i}">
+      <div class="focus-num">${item.done ? '✓' : i + 1}</div>
+      <div class="avatar" style="${avatarStyle(p)}" data-act="openPerson" data-id="${p.id}">${initials(p.name)}</div>
+      <div class="who">
+        <div class="name">${heads[item.kind]}</div>
+        <div class="meta">${subs[item.kind]}</div>
+      </div>
+      <div class="actions">
+        ${item.done ? '<span class="chip ok">done</span>' : acts + `<button class="btn tiny ghost" data-act="focusSkip" data-id="${item.id}">Skip</button>`}
+      </div>
+    </div>`;
+  };
+
   $('#view').innerHTML = `
     <div class="hero">
       <div>
         <div class="today-head rise">
           <h1>${hour < 12 ? 'Morning' : hour < 18 ? 'Afternoon' : 'Evening'}${hello}</h1>
           <div class="date">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${act.length} people in your orbit</div>
+          <div class="hero-chips rise" style="--i:1">
+            <span class="hero-chip"><b>${score}</b> orbit score ${sparklineSvg()}</span>
+            ${streak > 0 ? `<span class="hero-chip">🔥 <b>${streak}</b>-day streak</span>` : ''}
+            <button class="hero-chip as-btn" data-act="goReview">🧭 weekly review</button>
+          </div>
         </div>
         <div class="stats">
           ${stats.map(([n, l], i) => `<div class="stat spot rise" style="--i:${i + 1}"><div class="n" data-count="${n}">${n}</div><div class="l">${l}</div></div>`).join('')}
@@ -529,6 +718,30 @@ VIEWS.today = function renderToday() {
       </div>
       <div class="rise" style="--i:2">${constellationSvg()}</div>
     </div>
+
+    ${showReviewBanner ? `
+    <div class="review-banner rise" data-act="goReview">
+      <span>🧭 <b>${dow === 0 ? "It's Sunday" : 'New week'}</b> — two minutes to review your week and line up the next one.</span>
+      <span class="btn tiny primary">Start review →</span>
+    </div>` : ''}
+
+    ${focusItems.length ? `
+    <h2>Today's three <span class="sub">${focusDone}/${focusItems.length} done — this is the whole job</span></h2>
+    <div class="due-list">${focusItems.map(focusCard).join('')}</div>` : ''}
+
+    ${sugs.length ? `
+    <h2>Free nights this week <span class="sub">${hangsThisWeek}/${prof.socialBudget} hangs booked — one tap fills a night</span></h2>
+    <div class="due-list">${sugs.map((s, i) => `
+      <div class="due-row rise" style="--i:${i}">
+        <div class="avatar" style="${avatarStyle(s.person)}">${initials(s.person.name)}</div>
+        <div class="who">
+          <div class="name">${esc(fmtDay(s.date))} — ${esc(s.person.name)}</div>
+          <div class="meta">${s.idea ? `${esc(s.idea.title)} · ${esc(s.idea.hood || '')}` : 'Pick something together'}</div>
+        </div>
+        <div class="actions">
+          <button class="btn tiny accent" data-act="suggestPlan" data-id="${s.person.id}" data-idea="${s.idea?.id || ''}" data-date="${s.date}">Plan it →</button>
+        </div>
+      </div>`).join('')}</div>` : ''}
 
     ${bdays.length ? `
     <h2>Birthdays <span class="sub">next 14 days</span></h2>
@@ -870,7 +1083,13 @@ function buildDigestMarkdown() {
   for (const { p, d } of due) {
     const label = p.type === 'dating' ? `dating · ${p.stage}` : p.tier;
     const idea = suggestIdea(p);
-    lines.push(`- **${p.name}** (${label}) — ${d.overdue === 0 ? 'due today' : `${d.overdue}d overdue`}${p.lastContact ? `, last contact ${p.lastContact}` : ''}${p.nextStep ? `. Next step: ${p.nextStep}` : idea ? `. Idea: ${idea.title}` : ''}`);
+    const th = openThread(p);
+    lines.push(`- **${p.name}** (${label}) — ${d.overdue === 0 ? 'due today' : `${d.overdue}d overdue`}${p.lastContact ? `, last contact ${p.lastContact}` : ''}${th ? `. 💭 ${th.text}` : p.nextStep ? `. Next step: ${p.nextStep}` : idea ? `. Idea: ${idea.title}` : ''}`);
+  }
+  const sugs = planSuggestions(3);
+  if (sugs.length) {
+    lines.push('', '## Line up your week');
+    for (const s of sugs) lines.push(`- ${fmtDay(s.date)} — **${s.person.name}**${s.idea ? ` · ${s.idea.title} (${s.idea.hood || 'NYC'})` : ''}`);
   }
   const bdays = activePeople()
     .map(p => ({ name: p.name, date: nextBirthdayIso(p.birthday) }))
@@ -1031,6 +1250,69 @@ VIEWS.connect = async function renderConnect() {
   `;
 };
 
+// ---------- WEEKLY REVIEW ----------
+VIEWS.review = function renderReview() {
+  const ws = startOfWeek();
+  const we = addDays(ws, 6);
+  const prof = S.settings.profile || {};
+  const inWeek = d => d >= ws && d <= we;
+
+  const touched = activePeople().filter(p => (p.log || []).some(l => inWeek(l.date)));
+  const hangs = activePeople().flatMap(p => (p.log || []).filter(l => inWeek(l.date) && (l.kind === 'hangout' || l.kind === 'date')));
+  const plansUpcoming = plansThisWeek().filter(pl => pl.status !== 'done');
+  const budget = prof.socialBudget || null;
+  const budgetTotal = hangs.length + plansUpcoming.length;
+  const budgetMet = budget ? budgetTotal >= budget : budgetTotal > 0;
+
+  const slipping = activePeople()
+    .map(p => ({ p, d: dueInfo(p) }))
+    .filter(x => x.d && !x.d.snoozed && x.d.overdue >= x.d.cadence)
+    .sort((a, b) => (b.d.overdue * tierWeight(b.p)) - (a.d.overdue * tierWeight(a.p)))
+    .slice(0, 5);
+
+  const sugs = planSuggestions(3);
+  const score = orbitScore();
+
+  const statCard = (n, l, i) => `<div class="stat spot rise" style="--i:${i}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+
+  $('#view').innerHTML = `
+    <h1 style="margin-top:16px" class="rise">Weekly review</h1>
+    <p class="muted rise" style="--i:1">Week of ${fmtDate(ws)}–${fmtDate(we)} · the two-minute ritual that keeps the whole system honest.</p>
+    <div class="stats" style="margin-top:16px">
+      ${statCard(touched.length, 'people touched', 1)}
+      ${statCard(hangs.length, 'hangs & dates', 2)}
+      ${statCard(budget ? `${budgetTotal}/${budget}` : budgetTotal, budget ? 'weekly budget' : 'planned + done', 3)}
+      ${statCard(score, 'orbit score', 4)}
+      ${S.streaks.focusDays ? statCard(`🔥 ${S.streaks.focusDays}`, 'day streak', 5) : ''}
+    </div>
+    ${budgetMet ? `<div class="card rise" style="--i:2;border-color:color-mix(in srgb, var(--ok) 40%, transparent)">✨ <b>Budget met.</b> ${hangs.length ? `You showed up for ${touched.slice(0, 3).map(p => esc(p.name.split(' ')[0])).join(', ')}${touched.length > 3 ? ` and ${touched.length - 3} more` : ''} this week.` : 'Plans are locked in.'} That's the whole point of this app.</div>` : ''}
+
+    <h2>Slipping away <span class="sub">a full cadence overdue — worth a real reach-out</span></h2>
+    ${slipping.length
+      ? `<div class="due-list">${slipping.map((x, i) => dueRow(x, i)).join('')}</div>`
+      : `<div class="empty rise">Nobody's slipping. Genuinely impressive.</div>`}
+
+    <h2>Line up next week <span class="sub">your free nights, matched to your people</span></h2>
+    ${sugs.length
+      ? `<div class="due-list">${sugs.map((s, i) => `
+        <div class="due-row rise" style="--i:${i}">
+          <div class="avatar" style="${avatarStyle(s.person)}">${initials(s.person.name)}</div>
+          <div class="who">
+            <div class="name">${esc(fmtDay(s.date))} — ${esc(s.person.name)}</div>
+            <div class="meta">${s.idea ? `${esc(s.idea.title)} · ${esc(s.idea.hood || '')}` : 'Pick something together'}</div>
+          </div>
+          <div class="actions">
+            <button class="btn tiny accent" data-act="suggestPlan" data-id="${s.person.id}" data-idea="${s.idea?.id || ''}" data-date="${s.date}">Plan it →</button>
+          </div>
+        </div>`).join('')}</div>`
+      : `<div class="empty rise">Every preferred night already has a plan. Look at you.</div>`}
+
+    <div style="margin-top:28px;display:flex;justify-content:center">
+      <button class="btn accent big rise" data-act="reviewDone">Done — see you next week ✦</button>
+    </div>
+  `;
+};
+
 // ---------- PERSON DIALOG ----------
 function openPersonDialog(id, presets = {}) {
   const isNew = !id;
@@ -1063,6 +1345,16 @@ function openPersonDialog(id, presets = {}) {
       <label class="field">Slack<input id="pf-slack" value="${esc(p.handles.slack || '')}" placeholder="@name / workspace"></label>
       <label class="field full">Notes<textarea id="pf-notes" placeholder="How you met, what they care about, gift ideas…">${esc(p.notes || '')}</textarea></label>
     </div>
+    ${!isNew ? `
+      <h2 style="font-size:15px;margin-top:18px">Threads <span class="sub">things to bring up next time — they power your drafts</span></h2>
+      <div class="thread-list">${(p.threads || []).filter(t => !t.done).map(t => `
+        <div class="thread-item">💭 <span style="flex:1">${esc(t.text)}</span>
+          <button class="btn tiny ghost" data-thread-done="${t.id}" title="Resolved">✓</button></div>`).join('') || '<div class="small faint">Nothing open. Add one below — e.g. “How was the Berlin trip?”</div>'}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <input id="pf-thread" placeholder="Remember for next time…" style="flex:1">
+        <button class="btn" id="pf-thread-add">Add</button>
+      </div>` : ''}
     ${!isNew && (p.log || []).length ? `
       <h2 style="font-size:15px;margin-top:18px">History</h2>
       <div class="log-list">${p.log.slice(0, 12).map(l => `
@@ -1123,18 +1415,33 @@ function openPersonDialog(id, presets = {}) {
     $('#pf-logadd')?.addEventListener('click', () => {
       const note = $('#pf-lognote').value.trim();
       logContact(p, $('#pf-logkind').value, note);
+      maybeCompleteFocus(p.id);
       dlg.close(); save(); toast(`Logged for ${p.name}`);
     });
+    const addThread = () => {
+      const text = $('#pf-thread').value.trim();
+      if (!text) return;
+      p.threads.push({ id: uid(), text, createdAt: todayIso(), done: false });
+      persist();
+      openPersonDialog(p.id); // re-render dialog with the new thread
+      toast('Thread saved 💭');
+    };
+    $('#pf-thread-add')?.addEventListener('click', addThread);
+    $('#pf-thread')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addThread(); } });
+    dlg.querySelectorAll('[data-thread-done]').forEach(b => b.addEventListener('click', () => {
+      const t = p.threads.find(x => x.id === b.dataset.threadDone);
+      if (t) { t.done = true; persist(); openPersonDialog(p.id); toast('Thread resolved ✓'); }
+    }));
   }
 }
 
 // ---------- PLAN DIALOG ----------
-function openPlanDialog({ planId, personId, ideaId } = {}) {
+function openPlanDialog({ planId, personId, ideaId, date } = {}) {
   const existing = planId ? S.plans.find(x => x.id === planId) : null;
   const idea = ideaId ? S.ideas.find(i => i.id === ideaId) : null;
   const pl = existing || {
     id: uid(), title: idea ? idea.title : '', personIds: personId ? [personId] : [],
-    date: addDays(todayIso(), 2), time: '19:00', place: idea ? (idea.hood || '') : '', notes: '', status: 'upcoming',
+    date: date || addDays(todayIso(), 2), time: '19:00', place: idea ? (idea.hood || '') : '', notes: '', status: 'upcoming',
   };
   const candidates = activePeople().sort((a, b) => a.name.localeCompare(b.name));
   const dlg = $('#planDialog');
@@ -1169,9 +1476,14 @@ function openPlanDialog({ planId, personId, ideaId } = {}) {
     if (!pl.title || !pl.date) { toast('Needs a title and date'); return; }
     if (!existing) S.plans.push(pl);
     delete pl.sample;
+    if (focusPending) {
+      const item = S.focus?.items.find(i => i.id === focusPending);
+      if (item) { item.done = true; checkFocusComplete(); }
+      focusPending = null;
+    }
     dlg.close(); save(); toast('Plan saved 🗓️');
   });
-  $('#plf-cancel').addEventListener('click', () => dlg.close());
+  $('#plf-cancel').addEventListener('click', () => { focusPending = null; dlg.close(); });
 }
 
 // ---------- IDEA DIALOG ----------
@@ -1419,6 +1731,7 @@ function paletteItems(q) {
   add('🗓', 'New plan', 'Plans', () => openPlanDialog({}));
   add('✨', 'Add idea', 'Ideas', () => openIdeaDialog(null));
   add('⚡', 'Triage contacts', 'People', () => location.hash = '#triage');
+  add('🧭', 'Weekly review', 'Ritual', () => location.hash = '#review');
   add('◐', 'Toggle dark mode', 'Theme', toggleTheme);
   add('✦', 'Profile & settings', 'Setup', () => openWizard());
   if (syncCfg?.gistId) add('🔄', 'Sync now', 'Sync', () => { pushSync(); toast('Syncing…'); });
@@ -1493,6 +1806,7 @@ function openMoreSheet() {
   sheet.innerHTML = `
     <div class="sheet-list">
       <a href="#plans" data-close><span class="si">🗓</span>Plans</a>
+      <a href="#review" data-close><span class="si">🧭</span>Weekly review</a>
       <a href="#digest" data-close><span class="si">📰</span>Digest</a>
       <a href="#connect" data-close><span class="si">🔌</span>Connect</a>
       <button data-run="wizard"><span class="si">✦</span>Profile & settings</button>
@@ -1550,7 +1864,43 @@ const ACTIONS = {
   log(id) {
     const p = person(id);
     logContact(p, p.type === 'dating' ? 'date' : 'catchup', '');
+    maybeCompleteFocus(id);
     save(); toast(`Logged catch-up with ${p.name} ✓`);
+  },
+  focusLog(itemId) {
+    const item = S.focus?.items.find(i => i.id === itemId);
+    if (!item) return;
+    const p = person(item.personId);
+    logContact(p, p.type === 'dating' ? 'date' : 'catchup', item.kind === 'nextstep' ? p.nextStep : '');
+    if (item.kind === 'nextstep') p.nextStep = '';
+    item.done = true;
+    checkFocusComplete();
+    save();
+    toast(`${p.name} ✓ — ${S.focus.items.filter(i => i.done).length}/${S.focus.items.filter(i => !i.skipped).length} done`);
+  },
+  focusSkip(itemId) {
+    const item = S.focus?.items.find(i => i.id === itemId);
+    if (!item) return;
+    item.skipped = true;
+    checkFocusComplete();
+    save();
+  },
+  focusPlan(itemId) {
+    const item = S.focus?.items.find(i => i.id === itemId);
+    if (!item) return;
+    focusPending = itemId;
+    openPlanDialog({ personId: item.personId, ideaId: item.ideaId || undefined, date: item.date });
+  },
+  suggestPlan(personId, btn) {
+    openPlanDialog({ personId, ideaId: btn.dataset.idea || undefined, date: btn.dataset.date });
+  },
+  goReview() { location.hash = '#review'; },
+  reviewDone() {
+    S.streaks.lastReviewDate = todayIso();
+    persist();
+    confetti(36);
+    toast('Week reviewed — next one\'s lined up 🧭');
+    location.hash = '#today';
   },
   sayHi(id, btn) {
     const p = person(id);
@@ -1727,8 +2077,10 @@ $('#themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ?
   }
   if (syncCfg?.gistId) {
     setSyncDot('on');
-    pullSync().then(changed => { if (changed) render(); });
+    pullSync().then(changed => { if (changed) { snapshotHistory(); render(); } });
   }
+  snapshotHistory();
+  persist();
   render();
   if (!S.settings.profile.completed) setTimeout(() => openWizard(), 600);
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
