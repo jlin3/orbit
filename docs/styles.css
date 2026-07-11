@@ -434,6 +434,33 @@ input:focus, select:focus, textarea:focus {
 }
 .review-banner:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 
+/* circle builder */
+.build-card input { background: var(--surface-2); }
+.build-added {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; justify-content: center;
+}
+.build-pill {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: 999px;
+  padding: 4px 12px 4px 5px; font-size: 13px; font-weight: 550;
+  box-shadow: var(--shadow-sm);
+  animation: pop-in 0.35s var(--spring) both;
+  transition: transform var(--fast) var(--spring), box-shadow var(--fast) ease;
+}
+.build-pill:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.build-pill .avatar { box-shadow: none; }
+.build-cta {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: var(--shadow-md);
+  padding: 22px 24px; margin-top: 18px;
+}
+
+/* goals */
+.goal-row { display: flex; align-items: center; gap: 12px; }
+.goal-label { width: 130px; flex-shrink: 0; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.goal-val { width: 44px; text-align: right; font-family: var(--serif); font-weight: 600; font-variant-numeric: tabular-nums; }
+.goal-val.met { color: var(--ok); }
+
 /* threads */
 .thread-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .thread-item {

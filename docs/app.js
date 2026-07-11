@@ -63,19 +63,16 @@ function normalizeState() {
   S.streaks = S.streaks || { focusDays: 0, bestFocus: 0, lastFocusDate: null, lastReviewDate: null };
   S.history = S.history || [];
   S.focus = S.focus || null;
-  for (const p of S.people) p.threads = p.threads || [];
-  const seedHandles = {
-    p_maya: [{ phone: '+1 347 555 0142' }, 'messages'],
-    p_jordan: [{ phone: '+1 917 555 0188' }, 'whatsapp'],
-    p_sam: [{ instagram: 'samrivera' }, 'instagram'],
-    p_dev: [{ x: 'devpatel' }, 'x'],
-  };
+  S.settings.goals = S.settings.goals || {};
+  // sample/demo data is retired — real people only
+  if (S.people.some(p => p.sample) || (S.plans || []).some(pl => pl.sample)) {
+    S.people = S.people.filter(p => !p.sample);
+    S.plans = (S.plans || []).filter(pl => !pl.sample);
+    S.focus = null;
+  }
   for (const p of S.people) {
-    if (!p.handles) {
-      const sh = p.sample && seedHandles[p.id];
-      p.handles = sh ? { ...sh[0] } : {};
-      if (sh && !p.preferredChannel) p.preferredChannel = sh[1];
-    }
+    p.threads = p.threads || [];
+    p.handles = p.handles || {};
   }
 }
 
@@ -332,6 +329,18 @@ function planSuggestions(n = 3) {
 function plansThisWeek() {
   const ws = startOfWeek();
   return (S.plans || []).filter(pl => pl.date >= ws && pl.date <= addDays(ws, 6));
+}
+
+function datesThisMonth() {
+  const month = todayIso().slice(0, 7);
+  const seen = new Set();
+  for (const p of S.people) {
+    if (p.type !== 'dating') continue;
+    for (const l of (p.log || [])) {
+      if (l.kind === 'date' && l.date.startsWith(month)) seen.add(l.date + '|' + p.id);
+    }
+  }
+  return seen.size;
 }
 
 function orbitScore() {
@@ -632,10 +641,14 @@ VIEWS.today = function renderToday() {
   const hangsThisWeek = (S.plans || []).filter(pl =>
     pl.date >= weekStart && pl.date <= addDays(weekStart, 6)).length;
 
+  const goals = S.settings.goals || {};
+  const innerCount = act.filter(p => p.tier === 'inner' && p.type !== 'dating').length;
+  const datingCount = act.filter(p => p.type === 'dating').length;
+  const trackDates = goals.datesPerMonth && prof.datingMode !== 'paused';
   const stats = [
-    [act.filter(p => p.tier === 'inner').length, 'inner circle'],
+    [goals.innerTarget ? `${innerCount}/${goals.innerTarget}` : innerCount, 'inner circle'],
     [act.filter(p => p.tier === 'close').length, 'close'],
-    [act.filter(p => p.type === 'dating').length, 'dating'],
+    trackDates ? [`${datesThisMonth()}/${goals.datesPerMonth}`, 'dates this month'] : [datingCount, 'dating'],
     prof.socialBudget ? [`${hangsThisWeek}/${prof.socialBudget}`, 'hangs this week'] : [act.filter(p => p.tier === 'warm').length, 'keep warm'],
   ];
 
@@ -646,6 +659,30 @@ VIEWS.today = function renderToday() {
 
   const hello = prof.firstName ? `, ${esc(prof.firstName)}` : '';
   const hour = new Date().getHours();
+
+  if (!act.length) {
+    $('#view').innerHTML = `
+      <div class="hero">
+        <div>
+          <div class="today-head rise">
+            <h1>${hour < 12 ? 'Morning' : hour < 18 ? 'Afternoon' : 'Evening'}${hello}</h1>
+            <div class="date">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</div>
+          </div>
+          <div class="card build-cta rise" style="--i:1">
+            <div style="font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-0.3px">Your orbit is empty — let's fix that.</div>
+            <p class="muted" style="margin:8px 0 16px">Five minutes: your inner circle, close friends, anyone you're dating, and what you want out of it. Then the whole system — daily three, drafts, digest, plan suggestions — runs on your real life.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn accent big" data-act="goBuild">Build your orbit →</button>
+              ${LOCAL ? `<a class="btn" href="#connect">Import Apple Contacts</a>` : ''}
+              <a class="btn ghost" href="#triage">Paste a list</a>
+            </div>
+          </div>
+        </div>
+        <div class="rise" style="--i:2">${constellationSvg()}</div>
+      </div>
+    `;
+    return;
+  }
 
   const focus = generateFocus();
   const focusItems = focus.items.filter(i => !i.skipped);
@@ -852,7 +889,7 @@ VIEWS.people = function renderPeople() {
         <div class="small faint" style="width:110px;flex-shrink:0">last: ${fmtDate(p.lastContact)}</div>
         <div class="due">${dueBadge(p)}</div>
       </div>`).join('')}</div>`
-      : `<div class="empty rise"><span class="big">🌱</span>No one here yet. Add people one by one, hit <b>⚡ Triage</b> to paste a list${LOCAL ? ', or <a href="#connect">import your contacts</a>' : ''}.</div>`}
+      : `<div class="empty rise"><span class="big">🌱</span>No one here yet. <a href="#" data-act="goBuild"><b>Build your orbit</b></a> in five minutes, hit <b>⚡ Triage</b> to paste a list${LOCAL ? ', or <a href="#connect">import your contacts</a>' : ''}.</div>`}
   `;
   $('#peopleSearch').addEventListener('input', e => {
     peopleSearch = e.target.value;
@@ -1287,6 +1324,25 @@ VIEWS.review = function renderReview() {
     </div>
     ${budgetMet ? `<div class="card rise" style="--i:2;border-color:color-mix(in srgb, var(--ok) 40%, transparent)">✨ <b>Budget met.</b> ${hangs.length ? `You showed up for ${touched.slice(0, 3).map(p => esc(p.name.split(' ')[0])).join(', ')}${touched.length > 3 ? ` and ${touched.length - 3} more` : ''} this week.` : 'Plans are locked in.'} That's the whole point of this app.</div>` : ''}
 
+    ${(() => {
+      const goals = S.settings.goals || {};
+      const bars = [];
+      const bar = (label, n, target) => bars.push(`
+        <div class="goal-row">
+          <span class="goal-label">${label}</span>
+          <div class="triage-bar" style="flex:1;margin:0"><div class="fill" style="width:${Math.min(100, Math.round(100 * n / target))}%"></div></div>
+          <span class="goal-val ${n >= target ? 'met' : ''}">${n}/${target}</span>
+        </div>`);
+      const inner = activePeople().filter(p => p.tier === 'inner' && p.type !== 'dating').length;
+      if (goals.innerTarget) bar('Inner circle', inner, goals.innerTarget);
+      if (prof.socialBudget) bar('Hangs this week', budgetTotal, prof.socialBudget);
+      if (goals.datesPerMonth && prof.datingMode !== 'paused') bar('Dates this month', datesThisMonth(), goals.datesPerMonth);
+      const custom = (goals.custom || []).map(g => `<div class="thread-item">🎯 <span style="flex:1">${esc(g.text)}</span></div>`).join('');
+      if (!bars.length && !custom) return '';
+      return `<h2>Goals <span class="sub">set them in ✦ profile</span></h2>
+        <div class="card rise" style="display:flex;flex-direction:column;gap:12px">${bars.join('')}${custom ? `<div class="thread-list">${custom}</div>` : ''}</div>`;
+    })()}
+
     <h2>Slipping away <span class="sub">a full cadence overdue — worth a real reach-out</span></h2>
     ${slipping.length
       ? `<div class="due-list">${slipping.map((x, i) => dueRow(x, i)).join('')}</div>`
@@ -1312,6 +1368,102 @@ VIEWS.review = function renderReview() {
     </div>
   `;
 };
+
+// ---------- CIRCLE BUILDER ----------
+const BUILD_STEPS = [
+  { key: 'inner', type: 'friend', tier: 'inner', title: 'Your inner circle',
+    sub: 'The handful you\'d call at 2am. Weekly-ish energy.', target: s => s.goals?.innerTarget || 5 },
+  { key: 'close', type: 'friend', tier: 'close', title: 'Close friends',
+    sub: 'Great hangs, every few weeks. The people you\'re always glad you saw.', target: () => null },
+  { key: 'warm', type: 'friend', tier: 'warm', title: 'Keep warm',
+    sub: 'People you genuinely like but see a few times a year. Skip if you\'d rather triage a pasted list later.', target: () => null },
+  { key: 'dating', type: 'dating', tier: 'inner', title: 'Dating',
+    sub: 'Anyone currently in the picture — Orbit keeps the momentum.', target: () => null },
+];
+let buildStep = 0;
+
+VIEWS.build = function renderBuild() {
+  const step = BUILD_STEPS[buildStep];
+  const last = buildStep === BUILD_STEPS.length - 1;
+  const added = S.people.filter(p =>
+    step.type === 'dating' ? p.type === 'dating' && p.tier !== 'archived'
+      : p.type !== 'dating' && p.tier === step.tier);
+  const target = step.target(S.settings);
+  const quickTags = [...new Set([...(S.settings.interests || []), 'food', 'drinks', 'active', 'art', 'music'])].slice(0, 12);
+
+  $('#view').innerHTML = `
+    <div class="triage-wrap" style="max-width:680px">
+      <div class="wiz-dots" style="margin-top:20px">${BUILD_STEPS.map((_, i) => `<span class="dot ${i <= buildStep ? 'on' : ''}"></span>`).join('')}</div>
+      <h1 class="rise">${step.title}</h1>
+      <p class="muted rise" style="--i:1;margin:8px 0 20px">${step.sub}${target ? ` <b>Goal: ${target}.</b>` : ''}</p>
+
+      <div class="card build-card rise" style="--i:2;text-align:left">
+        <input id="bd-name" placeholder="${step.type === 'dating' ? 'Their name' : 'Name'}" autocomplete="off"
+          style="font-size:17px;padding:12px 14px;width:100%;font-family:var(--serif)">
+        ${step.type === 'dating' ? `
+          <div class="chip-select" style="margin-top:10px">
+            ${STAGES.map((s, i) => `<button class="pick bd-stage ${i === 0 ? 'on' : ''}" data-val="${s}">${STAGE_LABEL[s]}</button>`).join('')}
+          </div>
+          <input id="bd-nextstep" placeholder="Next step — e.g. “Suggest Thursday drinks”" style="width:100%;margin-top:10px">` : `
+          <div class="chip-select" style="margin-top:10px">
+            ${quickTags.map(t => `<button class="pick bd-tag" data-val="${esc(t)}">${esc(t)}</button>`).join('')}
+          </div>`}
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <input id="bd-phone" placeholder="Phone (for Messages/WhatsApp)" style="flex:2;min-width:180px">
+          <input id="bd-bday" placeholder="Birthday MM-DD" style="flex:1;min-width:110px">
+        </div>
+        <input id="bd-thread" placeholder="💭 Something to ask them about next time (optional)" style="width:100%;margin-top:10px">
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+          <button class="btn accent" data-act="buildAdd">Add ⏎</button>
+          <span class="small faint">Enter works too — rapid fire, details later</span>
+        </div>
+      </div>
+
+      ${added.length ? `
+      <div class="build-added rise" style="--i:3">
+        ${added.map(p => `<span class="build-pill" data-act="openPerson" data-id="${p.id}">
+          <span class="avatar" style="${avatarStyle(p)};width:22px;height:22px;font-size:9px">${initials(p.name)}</span>${esc(p.name.split(' ')[0])}</span>`).join('')}
+        <span class="small faint" style="align-self:center">${added.length}${target ? `/${target}` : ''} added</span>
+      </div>` : ''}
+
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:24px">
+        ${buildStep > 0 ? `<button class="btn ghost" data-act="buildBack">← Back</button>` : ''}
+        <button class="btn ${last ? 'accent big' : 'primary'}" data-act="buildNext">${last ? 'Finish — see my orbit ✦' : added.length ? 'Next →' : 'Skip →'}</button>
+      </div>
+    </div>
+  `;
+  $('#bd-name').focus();
+  $$('.bd-tag').forEach(b => b.addEventListener('click', () => b.classList.toggle('on')));
+  $$('.bd-stage').forEach(b => b.addEventListener('click', () =>
+    $$('.bd-stage').forEach(x => x.classList.toggle('on', x === b))));
+  $('#view').querySelectorAll('#bd-name, #bd-phone, #bd-bday, #bd-thread, #bd-nextstep').forEach(inp =>
+    inp?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); ACTIONS.buildAdd(); } }));
+};
+
+function buildAddPerson() {
+  const step = BUILD_STEPS[buildStep];
+  const name = $('#bd-name').value.trim();
+  if (!name) { toast('Name first'); return; }
+  if (S.people.some(p => p.name.toLowerCase() === name.toLowerCase())) { toast(`${name} is already in your orbit`); return; }
+  const phone = $('#bd-phone').value.trim();
+  const bday = $('#bd-bday').value.trim();
+  const threadText = $('#bd-thread').value.trim();
+  const p = {
+    id: uid(), name, type: step.type, tier: step.tier,
+    stage: step.type === 'dating' ? ($('.bd-stage.on')?.dataset.val || 'new') : null,
+    interests: step.type === 'dating' ? [] : $$('.bd-tag.on').map(b => b.dataset.val),
+    notes: '', nextStep: step.type === 'dating' ? ($('#bd-nextstep').value.trim() || '') : '',
+    handles: phone ? { phone } : {}, preferredChannel: null,
+    birthday: /^\d{2}-\d{2}$/.test(bday) ? bday : null,
+    lastContact: todayIso(), snoozedUntil: null, createdAt: todayIso(),
+    threads: threadText ? [{ id: uid(), text: threadText, createdAt: todayIso(), done: false }] : [],
+    log: [],
+  };
+  S.people.push(p);
+  persist();
+  toast(`${name} → ${step.type === 'dating' ? STAGE_LABEL[p.stage] : TIER_LABEL[step.tier]} ✓`);
+  VIEWS.build();
+}
 
 // ---------- PERSON DIALOG ----------
 function openPersonDialog(id, presets = {}) {
@@ -1545,6 +1697,9 @@ function openWizard(startStep = 0) {
       datingCadence: st.datingCadence || 5,
       datingMode: prof.datingMode || 'actively',
       dateStyles: [...(prof.dateStyles || [])],
+      innerTarget: st.goals?.innerTarget || 5,
+      datesPerMonth: st.goals?.datesPerMonth ?? 4,
+      customGoals: [...(st.goals?.custom || [])],
     },
   };
   renderWizard();
@@ -1628,6 +1783,35 @@ const WIZ_STEPS = [
     collect: () => {},
   },
   {
+    title: 'What does “winning” look like?',
+    sub: 'Goals turn the app from a list into a scoreboard. Orbit tracks these for you.',
+    body: d => `
+      <label class="field">Inner circle size — how many people get weekly-ish energy?</label>
+      <div class="wiz-row">
+        <input type="range" id="wz-innertarget" class="grow" min="2" max="10" value="${d.innerTarget}"
+          oninput="document.getElementById('wz-innertarget-val').textContent=this.value">
+        <div class="slider-val" id="wz-innertarget-val">${d.innerTarget}</div>
+      </div>
+      <label class="field" style="margin-top:10px">Dates per month <span style="font-weight:400;text-transform:none">(0 = don't track)</span></label>
+      <div class="wiz-row">
+        <input type="range" id="wz-datesgoal" class="grow" min="0" max="10" value="${d.datesPerMonth}"
+          oninput="document.getElementById('wz-datesgoal-val').textContent=this.value">
+        <div class="slider-val" id="wz-datesgoal-val">${d.datesPerMonth}</div>
+      </div>
+      <label class="field" style="margin-top:14px">Your own goals <span style="font-weight:400;text-transform:none">(shown in your weekly review)</span></label>
+      <div class="thread-list" style="margin-top:6px">
+        ${d.customGoals.map((g, i) => `<div class="thread-item">🎯 <span style="flex:1">${esc(g.text)}</span><button class="btn tiny ghost" data-goal-rm="${i}">✕</button></div>`).join('') || '<div class="small faint">e.g. “Host a dinner every month” · “One new friend per quarter”</div>'}
+      </div>
+      <div class="wiz-row">
+        <input id="wz-goal-custom" class="grow" placeholder="Add a goal…">
+        <button class="btn" id="wz-goal-add">Add</button>
+      </div>`,
+    collect: d => {
+      d.innerTarget = +$('#wz-innertarget').value || 5;
+      d.datesPerMonth = +$('#wz-datesgoal').value;
+    },
+  },
+  {
     title: 'Wire it up',
     sub: 'The finishing touches that make Orbit run itself — all one click, all in the Connect tab.',
     body: () => `
@@ -1678,6 +1862,18 @@ function renderWizard() {
   $('#wz-custom')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); $('#wz-custom-add').click(); }
   });
+  $('#wz-goal-add')?.addEventListener('click', () => {
+    const v = $('#wz-goal-custom').value.trim();
+    if (v) { wiz.data.customGoals.push({ id: uid(), text: v }); WIZ_STEPS[wiz.step].collect(wiz.data); renderWizard(); }
+  });
+  $('#wz-goal-custom')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); $('#wz-goal-add').click(); }
+  });
+  dlg.querySelectorAll('[data-goal-rm]').forEach(b => b.addEventListener('click', () => {
+    WIZ_STEPS[wiz.step].collect(wiz.data);
+    wiz.data.customGoals.splice(+b.dataset.goalRm, 1);
+    renderWizard();
+  }));
 
   $('#wz-back')?.addEventListener('click', () => { step.collect(wiz.data); wiz.dir = -1; wiz.step--; renderWizard(); });
   $('#wz-skip')?.addEventListener('click', () => {
@@ -1710,10 +1906,16 @@ function finishWizard() {
     completed: true,
     completedAt: todayIso(),
   };
+  S.settings.goals = {
+    ...S.settings.goals,
+    innerTarget: d.innerTarget,
+    datesPerMonth: d.datesPerMonth || null,
+    custom: [...d.customGoals],
+  };
   persist();
   confetti(36);
   toast(d.firstName ? `You're set, ${d.firstName} ✦` : "You're set ✦");
-  location.hash = '#connect';
+  location.hash = activePeople().length ? '#connect' : '#build';
   render();
 }
 
@@ -1731,6 +1933,7 @@ function paletteItems(q) {
   add('🗓', 'New plan', 'Plans', () => openPlanDialog({}));
   add('✨', 'Add idea', 'Ideas', () => openIdeaDialog(null));
   add('⚡', 'Triage contacts', 'People', () => location.hash = '#triage');
+  add('🌱', 'Build your orbit', 'Setup', () => { buildStep = 0; location.hash = '#build'; });
   add('🧭', 'Weekly review', 'Ritual', () => location.hash = '#review');
   add('◐', 'Toggle dark mode', 'Theme', toggleTheme);
   add('✦', 'Profile & settings', 'Setup', () => openWizard());
@@ -1807,6 +2010,7 @@ function openMoreSheet() {
     <div class="sheet-list">
       <a href="#plans" data-close><span class="si">🗓</span>Plans</a>
       <a href="#review" data-close><span class="si">🧭</span>Weekly review</a>
+      <a href="#build" data-close><span class="si">🌱</span>Build your orbit</a>
       <a href="#digest" data-close><span class="si">📰</span>Digest</a>
       <a href="#connect" data-close><span class="si">🔌</span>Connect</a>
       <button data-run="wizard"><span class="si">✦</span>Profile & settings</button>
@@ -1895,6 +2099,16 @@ const ACTIONS = {
     openPlanDialog({ personId, ideaId: btn.dataset.idea || undefined, date: btn.dataset.date });
   },
   goReview() { location.hash = '#review'; },
+  buildAdd() { buildAddPerson(); },
+  buildNext() {
+    if (buildStep < BUILD_STEPS.length - 1) { buildStep++; VIEWS.build(); return; }
+    buildStep = 0;
+    confetti(44);
+    toast(`${activePeople().length} people in your orbit — it's alive ✦`);
+    location.hash = '#today';
+  },
+  buildBack() { if (buildStep > 0) { buildStep--; VIEWS.build(); } },
+  goBuild() { buildStep = 0; location.hash = '#build'; },
   reviewDone() {
     S.streaks.lastReviewDate = todayIso();
     persist();

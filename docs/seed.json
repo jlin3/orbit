@@ -1,116 +1,318 @@
 {
   "settings": {
-    "tiers": { "inner": 7, "close": 21, "warm": 60 },
+    "tiers": {
+      "inner": 7,
+      "close": 21,
+      "warm": 60
+    },
     "datingCadence": 5,
     "email": "",
     "city": "New York",
-    "interests": ["live music", "comedy", "food", "art", "outdoors", "film", "tech"],
+    "interests": [
+      "live music",
+      "comedy",
+      "food",
+      "art",
+      "outdoors",
+      "film",
+      "tech"
+    ],
     "profile": {},
     "connections": {},
     "integrations": {}
   },
-  "meta": { "updatedAt": 0 },
-  "people": [
-    {
-      "id": "p_maya", "sample": true,
-      "name": "Maya Chen", "type": "friend", "tier": "inner", "stage": null, "birthday": "07-15",
-      "interests": ["comedy", "food"],
-      "notes": "College roommate's sister. Lives in Fort Greene. Always down for a late show.",
-      "nextStep": "",
-      "handles": { "phone": "+1 347 555 0142" }, "preferredChannel": "messages",
-      "threads": [{ "id": "t_maya1", "text": "How was the Portugal trip?", "createdAt": "2026-06-25", "done": false }],
-      "lastContact": "2026-06-25",
-      "snoozedUntil": null,
-      "createdAt": "2026-07-05",
-      "log": [
-        { "date": "2026-06-25", "kind": "hangout", "note": "Dinner at Roberta's" }
-      ]
-    },
-    {
-      "id": "p_dev", "sample": true,
-      "name": "Dev Patel", "type": "friend", "tier": "close", "stage": null,
-      "interests": ["active", "tech"],
-      "notes": "Former coworker. Climbs at VITAL on weekends.",
-      "nextStep": "",
-      "handles": { "x": "devpatel" }, "preferredChannel": "x",
-      "lastContact": "2026-06-05",
-      "snoozedUntil": null,
-      "createdAt": "2026-07-05",
-      "log": []
-    },
-    {
-      "id": "p_alex", "sample": true,
-      "name": "Alex Kim", "type": "friend", "tier": "warm", "stage": null,
-      "interests": ["music", "film"],
-      "notes": "Met at a jazz show at Ornithology. Good hang, low maintenance.",
-      "nextStep": "",
-      "handles": {}, "preferredChannel": null,
-      "lastContact": "2026-04-26",
-      "snoozedUntil": null,
-      "createdAt": "2026-07-05",
-      "log": []
-    },
-    {
-      "id": "p_sam", "sample": true,
-      "name": "Sam Rivera", "type": "dating", "tier": "inner", "stage": "talking",
-      "interests": ["art", "drinks"],
-      "notes": "Matched on Hinge. Works in publishing, lives in Greenpoint.",
-      "nextStep": "Suggest Thursday gallery night in Tribeca",
-      "handles": { "instagram": "samrivera" }, "preferredChannel": "instagram",
-      "lastContact": "2026-07-02",
-      "snoozedUntil": null,
-      "createdAt": "2026-07-05",
-      "log": [
-        { "date": "2026-07-02", "kind": "note", "note": "Good banter about Eephus and natural wine" }
-      ]
-    },
-    {
-      "id": "p_jordan", "sample": true,
-      "name": "Jordan Lee", "type": "dating", "tier": "inner", "stage": "dating", "birthday": "08-02",
-      "interests": ["food", "drinks", "film"],
-      "notes": "Two dates in. Great energy. Vegetarian.",
-      "nextStep": "Book Nitehawk dinner-movie for next week",
-      "handles": { "phone": "+1 917 555 0188" }, "preferredChannel": "whatsapp",
-      "lastContact": "2026-06-29",
-      "snoozedUntil": null,
-      "createdAt": "2026-07-05",
-      "log": [
-        { "date": "2026-06-29", "kind": "date", "note": "Cocktails at Clemente Bar — went well" },
-        { "date": "2026-06-20", "kind": "date", "note": "First date, coffee walk on the High Line" }
-      ]
-    }
-  ],
+  "meta": {
+    "updatedAt": 0
+  },
+  "people": [],
   "ideas": [
-    { "id": "i01", "title": "Comedy Cellar late show", "tags": ["comedy", "night"], "hood": "Greenwich Village", "cost": "$$", "best": "either", "notes": "Book ahead; the 11pm show gets drop-ins.", "favorite": true },
-    { "id": "i02", "title": "Smorgasburg", "tags": ["food", "outdoors"], "hood": "Prospect Park / WTC", "cost": "$", "best": "either", "notes": "Saturdays Prospect Park, Fridays WTC.", "favorite": false },
-    { "id": "i03", "title": "High Line walk + Chelsea Market", "tags": ["outdoors", "food"], "hood": "Chelsea", "cost": "$", "best": "date", "notes": "Classic low-stakes first date.", "favorite": false },
-    { "id": "i04", "title": "Village Vanguard jazz set", "tags": ["music", "night"], "hood": "West Village", "cost": "$$", "best": "date", "notes": "8pm set, arrive early for good seats.", "favorite": true },
-    { "id": "i05", "title": "Free kayaking at Pier 26", "tags": ["outdoors", "active"], "hood": "Tribeca", "cost": "free", "best": "friends", "notes": "Summer weekends, first-come first-served.", "favorite": false },
-    { "id": "i06", "title": "Nitehawk dinner + movie", "tags": ["film", "food"], "hood": "Williamsburg", "cost": "$$", "best": "date", "notes": "Order the truffle popcorn.", "favorite": true },
-    { "id": "i07", "title": "Russian & Turkish Baths", "tags": ["wellness"], "hood": "East Village", "cost": "$$", "best": "either", "notes": "Go on a weekday; cash for platza.", "favorite": false },
-    { "id": "i08", "title": "Bouldering session at VITAL", "tags": ["active"], "hood": "Fort Greene", "cost": "$$", "best": "friends", "notes": "Day passes available; good for groups.", "favorite": false },
-    { "id": "i09", "title": "Museum of the Moving Image", "tags": ["art", "film"], "hood": "Astoria", "cost": "$", "best": "either", "notes": "Pair with Greek food on Broadway after.", "favorite": false },
-    { "id": "i10", "title": "Brooklyn Botanic Garden", "tags": ["outdoors"], "hood": "Prospect Heights", "cost": "$", "best": "date", "notes": "Free Fridays before noon.", "favorite": false },
-    { "id": "i11", "title": "K-town karaoke + BBQ", "tags": ["music", "food", "night"], "hood": "Midtown", "cost": "$$", "best": "friends", "notes": "Private room at Gagopa after Jongro.", "favorite": false },
-    { "id": "i12", "title": "Grand Banks oysters on the boat", "tags": ["food", "drinks", "outdoors"], "hood": "Tribeca", "cost": "$$$", "best": "date", "notes": "Golden hour. No reservations for the bow.", "favorite": true },
-    { "id": "i13", "title": "Ceramics class at BKLYN CLAY", "tags": ["art", "hands-on"], "hood": "Gowanus", "cost": "$$", "best": "date", "notes": "One-off wheel classes on weekends.", "favorite": false },
-    { "id": "i14", "title": "Prospect Park picnic", "tags": ["outdoors", "hosting"], "hood": "Prospect Park", "cost": "$", "best": "friends", "notes": "Long Meadow, bring a speaker and a frisbee.", "favorite": false },
-    { "id": "i15", "title": "Film Forum double feature", "tags": ["film"], "hood": "SoHo", "cost": "$", "best": "date", "notes": "Check the repertory calendar.", "favorite": false },
-    { "id": "i16", "title": "Roberta's + Bushwick gallery crawl", "tags": ["food", "art"], "hood": "Bushwick", "cost": "$$", "best": "either", "notes": "Galleries open late on Fridays.", "favorite": false },
-    { "id": "i17", "title": "Washington Square chess + coffee", "tags": ["games", "outdoors"], "hood": "Greenwich Village", "cost": "$", "best": "friends", "notes": "Play the hustlers, lose $5, laugh about it.", "favorite": false },
-    { "id": "i18", "title": "Westlight rooftop drinks", "tags": ["drinks", "views", "night"], "hood": "Williamsburg", "cost": "$$$", "best": "date", "notes": "22nd floor of the William Vale.", "favorite": false },
-    { "id": "i19", "title": "Governors Island bike loop", "tags": ["outdoors", "active"], "hood": "Governors Island", "cost": "$", "best": "either", "notes": "Ferry from Wall St; rent Citi Bikes there.", "favorite": false },
-    { "id": "i20", "title": "Host a dinner party", "tags": ["food", "hosting"], "hood": "Home", "cost": "$$", "best": "friends", "notes": "Shop at Big Night for the table. 6 people max, one long conversation.", "favorite": true },
-    { "id": "i21", "title": "The Met + rooftop garden bar", "tags": ["art", "views", "drinks"], "hood": "Upper East Side", "cost": "$", "best": "date", "notes": "Rooftop open May–Oct.", "favorite": false },
-    { "id": "i22", "title": "Run club + bagels after", "tags": ["active", "food"], "hood": "Various", "cost": "$", "best": "friends", "notes": "Standing weekend slot — easy recurring hang.", "favorite": false }
-  ],
-  "plans": [
     {
-      "id": "pl_sample", "sample": true,
-      "title": "Smorgasburg", "personIds": ["p_maya"],
-      "date": "2026-07-11", "time": "12:00", "place": "Prospect Park",
-      "notes": "", "status": "upcoming"
+      "id": "i01",
+      "title": "Comedy Cellar late show",
+      "tags": [
+        "comedy",
+        "night"
+      ],
+      "hood": "Greenwich Village",
+      "cost": "$$",
+      "best": "either",
+      "notes": "Book ahead; the 11pm show gets drop-ins.",
+      "favorite": true
+    },
+    {
+      "id": "i02",
+      "title": "Smorgasburg",
+      "tags": [
+        "food",
+        "outdoors"
+      ],
+      "hood": "Prospect Park / WTC",
+      "cost": "$",
+      "best": "either",
+      "notes": "Saturdays Prospect Park, Fridays WTC.",
+      "favorite": false
+    },
+    {
+      "id": "i03",
+      "title": "High Line walk + Chelsea Market",
+      "tags": [
+        "outdoors",
+        "food"
+      ],
+      "hood": "Chelsea",
+      "cost": "$",
+      "best": "date",
+      "notes": "Classic low-stakes first date.",
+      "favorite": false
+    },
+    {
+      "id": "i04",
+      "title": "Village Vanguard jazz set",
+      "tags": [
+        "music",
+        "night"
+      ],
+      "hood": "West Village",
+      "cost": "$$",
+      "best": "date",
+      "notes": "8pm set, arrive early for good seats.",
+      "favorite": true
+    },
+    {
+      "id": "i05",
+      "title": "Free kayaking at Pier 26",
+      "tags": [
+        "outdoors",
+        "active"
+      ],
+      "hood": "Tribeca",
+      "cost": "free",
+      "best": "friends",
+      "notes": "Summer weekends, first-come first-served.",
+      "favorite": false
+    },
+    {
+      "id": "i06",
+      "title": "Nitehawk dinner + movie",
+      "tags": [
+        "film",
+        "food"
+      ],
+      "hood": "Williamsburg",
+      "cost": "$$",
+      "best": "date",
+      "notes": "Order the truffle popcorn.",
+      "favorite": true
+    },
+    {
+      "id": "i07",
+      "title": "Russian & Turkish Baths",
+      "tags": [
+        "wellness"
+      ],
+      "hood": "East Village",
+      "cost": "$$",
+      "best": "either",
+      "notes": "Go on a weekday; cash for platza.",
+      "favorite": false
+    },
+    {
+      "id": "i08",
+      "title": "Bouldering session at VITAL",
+      "tags": [
+        "active"
+      ],
+      "hood": "Fort Greene",
+      "cost": "$$",
+      "best": "friends",
+      "notes": "Day passes available; good for groups.",
+      "favorite": false
+    },
+    {
+      "id": "i09",
+      "title": "Museum of the Moving Image",
+      "tags": [
+        "art",
+        "film"
+      ],
+      "hood": "Astoria",
+      "cost": "$",
+      "best": "either",
+      "notes": "Pair with Greek food on Broadway after.",
+      "favorite": false
+    },
+    {
+      "id": "i10",
+      "title": "Brooklyn Botanic Garden",
+      "tags": [
+        "outdoors"
+      ],
+      "hood": "Prospect Heights",
+      "cost": "$",
+      "best": "date",
+      "notes": "Free Fridays before noon.",
+      "favorite": false
+    },
+    {
+      "id": "i11",
+      "title": "K-town karaoke + BBQ",
+      "tags": [
+        "music",
+        "food",
+        "night"
+      ],
+      "hood": "Midtown",
+      "cost": "$$",
+      "best": "friends",
+      "notes": "Private room at Gagopa after Jongro.",
+      "favorite": false
+    },
+    {
+      "id": "i12",
+      "title": "Grand Banks oysters on the boat",
+      "tags": [
+        "food",
+        "drinks",
+        "outdoors"
+      ],
+      "hood": "Tribeca",
+      "cost": "$$$",
+      "best": "date",
+      "notes": "Golden hour. No reservations for the bow.",
+      "favorite": true
+    },
+    {
+      "id": "i13",
+      "title": "Ceramics class at BKLYN CLAY",
+      "tags": [
+        "art",
+        "hands-on"
+      ],
+      "hood": "Gowanus",
+      "cost": "$$",
+      "best": "date",
+      "notes": "One-off wheel classes on weekends.",
+      "favorite": false
+    },
+    {
+      "id": "i14",
+      "title": "Prospect Park picnic",
+      "tags": [
+        "outdoors",
+        "hosting"
+      ],
+      "hood": "Prospect Park",
+      "cost": "$",
+      "best": "friends",
+      "notes": "Long Meadow, bring a speaker and a frisbee.",
+      "favorite": false
+    },
+    {
+      "id": "i15",
+      "title": "Film Forum double feature",
+      "tags": [
+        "film"
+      ],
+      "hood": "SoHo",
+      "cost": "$",
+      "best": "date",
+      "notes": "Check the repertory calendar.",
+      "favorite": false
+    },
+    {
+      "id": "i16",
+      "title": "Roberta's + Bushwick gallery crawl",
+      "tags": [
+        "food",
+        "art"
+      ],
+      "hood": "Bushwick",
+      "cost": "$$",
+      "best": "either",
+      "notes": "Galleries open late on Fridays.",
+      "favorite": false
+    },
+    {
+      "id": "i17",
+      "title": "Washington Square chess + coffee",
+      "tags": [
+        "games",
+        "outdoors"
+      ],
+      "hood": "Greenwich Village",
+      "cost": "$",
+      "best": "friends",
+      "notes": "Play the hustlers, lose $5, laugh about it.",
+      "favorite": false
+    },
+    {
+      "id": "i18",
+      "title": "Westlight rooftop drinks",
+      "tags": [
+        "drinks",
+        "views",
+        "night"
+      ],
+      "hood": "Williamsburg",
+      "cost": "$$$",
+      "best": "date",
+      "notes": "22nd floor of the William Vale.",
+      "favorite": false
+    },
+    {
+      "id": "i19",
+      "title": "Governors Island bike loop",
+      "tags": [
+        "outdoors",
+        "active"
+      ],
+      "hood": "Governors Island",
+      "cost": "$",
+      "best": "either",
+      "notes": "Ferry from Wall St; rent Citi Bikes there.",
+      "favorite": false
+    },
+    {
+      "id": "i20",
+      "title": "Host a dinner party",
+      "tags": [
+        "food",
+        "hosting"
+      ],
+      "hood": "Home",
+      "cost": "$$",
+      "best": "friends",
+      "notes": "Shop at Big Night for the table. 6 people max, one long conversation.",
+      "favorite": true
+    },
+    {
+      "id": "i21",
+      "title": "The Met + rooftop garden bar",
+      "tags": [
+        "art",
+        "views",
+        "drinks"
+      ],
+      "hood": "Upper East Side",
+      "cost": "$",
+      "best": "date",
+      "notes": "Rooftop open May–Oct.",
+      "favorite": false
+    },
+    {
+      "id": "i22",
+      "title": "Run club + bagels after",
+      "tags": [
+        "active",
+        "food"
+      ],
+      "hood": "Various",
+      "cost": "$",
+      "best": "friends",
+      "notes": "Standing weekend slot — easy recurring hang.",
+      "favorite": false
     }
   ],
+  "plans": [],
   "events": []
 }
