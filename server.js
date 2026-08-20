@@ -71,6 +71,189 @@ function nextBirthday(bday) { // "MM-DD" → next occurrence as YYYY-MM-DD
   return iso >= t ? iso : `${+t.slice(0, 4) + 1}-${bday}`;
 }
 
+// ---------- taste engine ----------
+// Events are dated and expire; venues persist and accumulate "buzz"
+// (independent mentions across sources). Feedback nudges per-tag weights.
+
+const VENUE_STATUS_ORDER = { 'opening-soon': 0, new: 1, hot: 2, classic: 3 };
+
+function normKey(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function uid(prefix) {
+  return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function buzz(venue, today) {
+  const cutoff = addDays(today, -30);
+  const names = new Set((venue.sources || [])
+    .filter(s => (s.date || today) >= cutoff)
+    .map(s => normKey(s.name)));
+  return names.size;
+}
+
+function tasteScore(tags, state) {
+  const interests = new Set((state.settings.interests || []).map(normKey));
+  const weights = state.settings.tasteWeights || {};
+  let score = 0;
+  for (const t of tags || []) {
+    const k = normKey(t);
+    score += (interests.has(k) ? 1 : 0.2) * (weights[k] != null ? weights[k] : 1);
+  }
+  return score;
+}
+
+function hoodBonus(hood, state) {
+  const mine = ((state.settings.profile || {}).neighborhoods || []).map(normKey);
+  const h = normKey(hood);
+  return h && mine.some(m => m && (h.includes(m) || m.includes(h))) ? 1 : 0;
+}
+
+function nightBonus(dateIso, state) {
+  if (!dateIso) return 0;
+  const nights = (state.settings.profile || {}).nights || [];
+  const day = new Date(dateIso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+  return nights.includes(day) ? 0.5 : 0;
+}
+
+function scoreEvent(e, state) {
+  return tasteScore(e.tags, state)
+    + hoodBonus(e.neighborhood || e.venue, state)
+    + nightBonus(e.date, state)
+    + Math.min((e.sources || []).length, 3) * 0.3
+    + (e.status === 'saved' ? 2 : 0);
+}
+
+function scoreVenue(v, state, today) {
+  const novelty = { 'opening-soon': 0.75, new: 0.75, hot: 0.5 }[v.status] || 0;
+  return tasteScore(v.tags, state)
+    + hoodBonus(v.hood, state)
+    + Math.min(buzz(v, today), 4) * 0.5
+    + novelty
+    + (v.flag === 'saved' ? 2 : 0);
+}
+
+// Merge new candidates instead of overwriting. A re-mention of something we
+// already know about is signal (buzz), not a duplicate row.
+function ingestCandidates(state, body) {
+  const today = localISO();
+  const out = { eventsAdded: 0, eventsMerged: 0, venuesAdded: 0, venuesMerged: 0 };
+  state.events = state.events || [];
+  state.venues = state.venues || [];
+
+  for (const raw of body.events || []) {
+    if (!raw || !raw.title) continue;
+    const key = normKey(raw.title) + '|' + (raw.date || '');
+    const mention = { name: raw.source || 'web', date: today };
+    const existing = state.events.find(e => normKey(e.title) + '|' + (e.date || '') === key);
+    if (existing) {
+      existing.tags = [...new Set([...(existing.tags || []), ...(raw.tags || [])])];
+      for (const f of ['venue', 'url', 'neighborhood', 'category', 'price', 'endDate']) {
+        if (raw[f] && !existing[f]) existing[f] = raw[f];
+      }
+      existing.sources = existing.sources || [];
+      if (!existing.sources.some(s => normKey(s.name) === normKey(mention.name))) {
+        existing.sources.push(mention);
+      }
+      out.eventsMerged++;
+    } else {
+      state.events.push({ id: uid('e'), status: 'new', firstSeen: today, ...raw, sources: [mention] });
+      out.eventsAdded++;
+    }
+  }
+
+  for (const raw of body.venues || []) {
+    if (!raw || !raw.name) continue;
+    const mention = { name: raw.source || 'web', date: raw.sourceDate || today };
+    const existing = state.venues.find(v => normKey(v.name) === normKey(raw.name));
+    if (existing) {
+      existing.tags = [...new Set([...(existing.tags || []), ...(raw.tags || [])])];
+      for (const f of ['hood', 'kind', 'url', 'bookVia', 'notes']) {
+        if (raw[f] && !existing[f]) existing[f] = raw[f];
+      }
+      if (raw.availability) existing.availability = raw.availability; // always refresh
+      if (raw.status && (VENUE_STATUS_ORDER[raw.status] ?? -1) > (VENUE_STATUS_ORDER[existing.status] ?? -1)) {
+        existing.status = raw.status;
+      }
+      if (raw.visited) existing.visited = [...new Set([...(existing.visited || []), ...raw.visited])].sort();
+      if (!(existing.sources || []).some(s => normKey(s.name) === normKey(mention.name) && s.date === mention.date)) {
+        (existing.sources = existing.sources || []).push(mention);
+      }
+      out.venuesMerged++;
+    } else {
+      state.venues.push({
+        id: uid('v'), status: 'new', firstSeen: today, visited: [], ...raw, sources: [mention],
+      });
+      out.venuesAdded++;
+    }
+  }
+
+  // Buzz promotion: three independent mentions in 30 days makes a spot "hot".
+  for (const v of state.venues) {
+    if ((v.status === 'new' || v.status === 'opening-soon') && buzz(v, today) >= 3) v.status = 'hot';
+  }
+  // Expire events that ended more than a week ago.
+  state.events = state.events.filter(e => {
+    const end = e.endDate || e.date;
+    return !end || end >= addDays(today, -7);
+  });
+  return out;
+}
+
+function applyFeedback(state, fb) {
+  const list = fb.kind === 'venue' ? state.venues : state.events;
+  const item = (list || []).find(x => x.id === fb.id);
+  if (!item) return null;
+  if (fb.kind === 'venue') {
+    if (fb.action === 'save') item.flag = 'saved';
+    if (fb.action === 'dismiss') item.flag = 'dismissed';
+    if (fb.action === 'visited') item.visited = [...new Set([...(item.visited || []), fb.date || localISO()])].sort();
+  } else {
+    if (fb.action === 'save' || fb.action === 'planned') item.status = 'saved';
+    if (fb.action === 'dismiss') item.status = 'dismissed';
+  }
+  const delta = { save: 0.15, planned: 0.15, visited: 0.15, dismiss: -0.1 }[fb.action] || 0;
+  if (delta) {
+    const w = state.settings.tasteWeights = state.settings.tasteWeights || {};
+    for (const t of item.tags || []) {
+      const k = normKey(t);
+      w[k] = Math.round(Math.max(0.2, Math.min(3, (w[k] != null ? w[k] : 1) + delta)) * 100) / 100;
+    }
+  }
+  return item;
+}
+
+// Auto-add confirmed reservations (parsed from confirmation emails) as plans.
+function ingestPlans(state, plans) {
+  const out = { added: 0, skipped: [] };
+  state.plans = state.plans || [];
+  for (const raw of plans || []) {
+    if (!raw || !raw.title || !raw.date) continue;
+    if (state.plans.some(pl => normKey(pl.title) === normKey(raw.title) && pl.date === raw.date)) {
+      out.skipped.push(raw.title);
+      continue;
+    }
+    const names = raw.people || (raw.personName ? [raw.personName] : []);
+    const personIds = names
+      .map(n => (state.people.find(p => normKey(p.name) === normKey(n) || normKey(p.name).startsWith(normKey(n))) || {}).id)
+      .filter(Boolean);
+    state.plans.push({
+      id: uid('pl'),
+      title: raw.title,
+      date: raw.date,
+      time: raw.time || null,
+      place: raw.place || null,
+      notes: raw.notes || (raw.source ? `Auto-added from ${raw.source}` : null),
+      personIds,
+      status: 'upcoming',
+      source: raw.source || null,
+    });
+    out.added++;
+  }
+  return out;
+}
+
 function suggestIdea(person, ideas) {
   const wantBest = person.type === 'dating' ? ['date', 'either'] : ['friends', 'either'];
   const pool = ideas.filter(i => wantBest.includes(i.best));
@@ -153,8 +336,22 @@ function computeDigest(state) {
     }));
 
   const events = (state.events || [])
-    .filter(e => !e.date || e.date >= today)
+    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today))
+    .sort((a, b) => scoreEvent(b, state) - scoreEvent(a, state))
     .slice(0, 12);
+
+  const buzzing = (state.venues || [])
+    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
+    .sort((a, b) => scoreVenue(b, state, today) - scoreVenue(a, state, today))
+    .slice(0, 6)
+    .map(v => ({ ...v, buzz: buzz(v, today) }));
+
+  const toBook = (state.venues || [])
+    .filter(v => v.flag !== 'dismissed'
+      && ['restaurant', 'bar'].includes(v.kind)
+      && !(v.visited || []).some(d => d >= addDays(today, -60)))
+    .sort((a, b) => scoreVenue(b, state, today) - scoreVenue(a, state, today))
+    .slice(0, 5);
 
   const datingNudges = state.people
     .filter(p => p.type === 'dating' && p.stage && p.stage !== 'ended' && p.tier !== 'archived' && p.nextStep)
@@ -195,10 +392,25 @@ function computeDigest(state) {
     for (const n of datingNudges) lines.push(`- **${n.name}** (${n.stage}): ${n.nextStep}`);
   }
   lines.push('');
-  lines.push('## Happening in New York');
+  lines.push(`## Happening in ${state.settings.city || 'New York'}`);
   if (events.length === 0) lines.push('No events loaded yet — the daily agent fills these in.');
   for (const e of events) {
     lines.push(`- ${e.date ? e.date + ' — ' : ''}**${e.title}**${e.venue ? ` @ ${e.venue}` : ''}${e.url ? ` (${e.url})` : ''}`);
+  }
+  if (buzzing.length) {
+    lines.push('');
+    lines.push('## New & buzzing');
+    for (const v of buzzing) {
+      const label = v.status === 'opening-soon' ? 'opening soon' : v.status;
+      lines.push(`- **${v.name}**${v.hood ? ` (${v.hood})` : ''} — ${label}${v.buzz > 1 ? ` · ${v.buzz} sources this month` : ''}${v.notes ? `. ${v.notes}` : ''}${v.url ? ` (${v.url})` : ''}`);
+    }
+  }
+  if (toBook.length) {
+    lines.push('');
+    lines.push('## Restaurants to book');
+    for (const v of toBook) {
+      lines.push(`- **${v.name}**${v.hood ? ` (${v.hood})` : ''}${v.availability ? ` — ${v.availability}` : ''}${v.bookVia ? ` — book: ${v.bookVia}` : ''}`);
+    }
   }
 
   return {
@@ -210,6 +422,8 @@ function computeDigest(state) {
     plans,
     datingNudges,
     events,
+    buzzing,
+    toBook,
     markdown: lines.join('\n'),
   };
 }
@@ -339,6 +553,11 @@ const server = http.createServer(async (req, res) => {
       if (!body || !Array.isArray(body.people) || !body.settings) {
         return sendJSON(res, 400, { error: 'invalid state shape' });
       }
+      // Older clients don't know about agent-owned collections — never let a
+      // client save wipe them.
+      const prev = loadState();
+      if (body.venues === undefined) body.venues = prev.venues || [];
+      if (body.events === undefined) body.events = prev.events || [];
       saveState(body);
       return sendJSON(res, 200, { ok: true });
     }
@@ -350,6 +569,35 @@ const server = http.createServer(async (req, res) => {
       state.events = body.events;
       saveState(state);
       return sendJSON(res, 200, { ok: true, count: body.events.length });
+    }
+    if (p === '/api/ingest' && req.method === 'POST') {
+      // daily agent: merge extracted events + venues, dedupe, track buzz
+      const body = JSON.parse(await readBody(req));
+      if (!Array.isArray(body.events) && !Array.isArray(body.venues)) {
+        return sendJSON(res, 400, { error: 'expected {events: [...]} and/or {venues: [...]}' });
+      }
+      const state = loadState();
+      const result = ingestCandidates(state, body);
+      saveState(state);
+      return sendJSON(res, 200, { ok: true, ...result });
+    }
+    if (p === '/api/feedback' && req.method === 'POST') {
+      // {kind: 'event'|'venue', id, action: 'save'|'dismiss'|'planned'|'visited', date?}
+      const body = JSON.parse(await readBody(req));
+      const state = loadState();
+      const item = applyFeedback(state, body || {});
+      if (!item) return sendJSON(res, 404, { error: 'no such item' });
+      saveState(state);
+      return sendJSON(res, 200, { ok: true, id: item.id, tasteWeights: state.settings.tasteWeights || {} });
+    }
+    if (p === '/api/plans/ingest' && req.method === 'POST') {
+      // daily agent: auto-add confirmed reservations as plans
+      const body = JSON.parse(await readBody(req));
+      if (!Array.isArray(body.plans)) return sendJSON(res, 400, { error: 'expected {plans: [...]}' });
+      const state = loadState();
+      const result = ingestPlans(state, body.plans);
+      saveState(state);
+      return sendJSON(res, 200, { ok: true, ...result });
     }
     if (p === '/api/digest' && req.method === 'GET') {
       return sendJSON(res, 200, computeDigest(loadState()));

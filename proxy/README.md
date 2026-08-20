@@ -1,8 +1,14 @@
 # Orbit Concierge proxy
 
-A single Cloudflare Worker that stands between the Orbit PWA and a
-search-capable LLM. It holds the API key, so anyone you share Orbit with gets
-working Tonight / Weekend plans without bringing a key of their own.
+A single Cloudflare Worker with two jobs:
+
+- **`POST /concierge`** — stands between the Orbit PWA and a search-capable
+  LLM. It holds the API keys, so anyone you share Orbit with gets working
+  Tonight / Weekend plans without bringing a key of their own.
+- **`GET /feed?city=…`** — the shared per-city feed: events and venues that
+  an ingestion agent publishes once per city (newsletters, Instagram,
+  openings scans), served to every Orbit user there. Profiles never touch
+  the server; ranking happens on-device.
 
 ## Deploy
 
@@ -11,10 +17,17 @@ cd proxy
 npm install
 npx wrangler login
 
-# At least one of these. OpenAI and xAI are both supported; if both keys are
-# set, OpenAI is used unless the request asks for xai.
+# At least one provider key. All four are supported; the request's
+# `provider` field picks one, otherwise the first configured wins
+# (openai → xai → anthropic → gemini).
 npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put XAI_API_KEY
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put GEMINI_API_KEY
+
+# Optional: enable the shared city feed.
+npx wrangler kv namespace create FEED   # paste the id into wrangler.toml
+npx wrangler secret put FEED_ADMIN_KEY  # any long random string
 
 npx wrangler deploy
 ```
@@ -53,9 +66,16 @@ curl https://orbit-concierge.<subdomain>.workers.dev/health
   },
   "companions": [
     { "name": "Maya", "relationship": "inner circle", "overdueDays": 21, "interests": ["comedy"] }
+  ],
+  "candidates": [
+    { "name": "Bar Test", "hood": "Williamsburg", "tags": ["cocktails"], "availability": "Resy: tables Thu 19:00–21:00", "url": "https://…" }
   ]
 }
 ```
+
+`candidates` (optional, up to 20) are pre-vetted events/venues from the
+user's own taste engine. The model is told to prefer them when they fit and
+verify with search — grounding, not a straitjacket.
 
 The response is an SSE stream of four event types:
 
@@ -69,13 +89,33 @@ The response is an SSE stream of four event types:
 Each `pick` carries `slot`, `date`, `title`, `venue`, `neighborhood`,
 `startTime`, `price`, `kind`, `why`, `tip`, `url`, `bring`, and `indoor`.
 
+## The feed API
+
+```bash
+# read (public, cached ~15 min)
+curl 'https://…workers.dev/feed?city=new-york'
+# → {"city":"new-york","updatedAt":"…","events":[…],"venues":[…]}
+
+# write (ingestion agent only)
+curl -X POST 'https://…workers.dev/feed' \
+  -H "Authorization: Bearer $FEED_ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"city":"new-york","events":[…],"venues":[…]}'
+```
+
+Each POST replaces the city's feed wholesale (capped at 200 events + 200
+venues); the agent owns merge/dedupe logic locally via Orbit's `/api/ingest`
+and publishes the already-deduped pool.
+
 ## How it streams
 
-Both OpenAI and xAI expose the same `/v1/responses` endpoint with a hosted
+OpenAI and xAI expose the same `/v1/responses` endpoint with a hosted
 `web_search` tool, so one adapter covers both (xAI also gets `x_search`, which
 pulls in X posts). xAI's older Live Search `search_parameters` field is gone —
 it returns `410 Gone` — which is why this talks to `/v1/responses` rather than
-`/v1/chat/completions`.
+`/v1/chat/completions`. Anthropic (`/v1/messages` + `web_search_20250305`)
+and Gemini (`streamGenerateContent` + `google_search`) get their own small
+adapters; each maps its SSE events to the same internal
+`{delta|searching|error}` signals.
 
 The model is asked for NDJSON: one complete JSON object per line. The Worker
 watches `response.output_text.delta` events, splits on newlines, parses each

@@ -19,7 +19,8 @@
     ],
     "profile": {},
     "connections": {},
-    "integrations": {}
+    "integrations": {},
+    "tasteWeights": {}
   },
   "meta": {
     "updatedAt": 0
@@ -336,5 +337,6 @@
     }
   ],
   "plans": [],
-  "events": []
+  "events": [],
+  "venues": []
 }

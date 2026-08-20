@@ -1,0 +1,10 @@
+# Curated NYC accounts — one per line, @ optional. Comments start with #.
+# Ten good accounts beat a hundred noisy ones.
+eaterny
+infatuation
+nonsense.nyc
+nycforfree
+secretnyc_
+newforkcity
+nycgalleryopenings
+theskint
