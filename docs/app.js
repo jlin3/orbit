@@ -2,7 +2,7 @@
 
 // ---------- environment ----------
 const LOCAL = location.port === '4747'; // served by the Mac server (has /api); otherwise static web/PWA
-const WEB_URL = 'https://jlin3.github.io/orbit/';
+const WEB_URL = 'https://getorbit.pages.dev/';
 
 // The concierge proxy holds the model key, so people you share Orbit with get
 // real plans without bringing an API key of their own. Override in Connect.

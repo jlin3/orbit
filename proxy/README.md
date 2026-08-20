@@ -128,8 +128,8 @@ You are paying for every request, so the Worker:
 
 - only accepts requests from the origins in `ALLOWED_ORIGINS` (plus any
   localhost port, for local development);
-- rate limits per IP — uncomment the `RATE_LIMITER` binding in
-  [`wrangler.toml`](./wrangler.toml) for a real cross-isolate limit, otherwise
-  it falls back to a best-effort in-memory counter capped by `DAILY_LIMIT`.
+- rate limits per IP: a native `RATE_LIMITER` burst cap (30/min) plus
+  `DAILY_LIMIT` (200) so a group chat can actually use Tonight without
+  one runaway tab draining the budget.
 
 Nothing is stored. No profile, no request body, no response.

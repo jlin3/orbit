@@ -1,0 +1,177 @@
+{
+  "city": "new-york",
+  "events": [
+    {
+      "title": "NYC Summer Streets (final Saturday)",
+      "date": "2026-08-22",
+      "venue": "Park Avenue + routes across all five boroughs",
+      "neighborhood": "citywide",
+      "tags": ["outdoors", "active", "free"],
+      "price": "free",
+      "url": "https://www.nyc.gov/html/dot/summerstreets/html/home/home.shtml",
+      "source": "NYC DOT"
+    },
+    {
+      "title": "MoMA PS1 Warm Up",
+      "date": "2026-08-21",
+      "venue": "MoMA PS1 courtyard",
+      "neighborhood": "Long Island City",
+      "tags": ["nightlife", "music", "outdoors"],
+      "price": "$$",
+      "url": "https://www.momaps1.org/programs/warmup",
+      "source": "MoMA PS1"
+    },
+    {
+      "title": "Ghetto Gastro: Red Rice",
+      "date": "2026-08-21",
+      "endDate": "2026-08-23",
+      "venue": "Little Island",
+      "neighborhood": "Hudson River Park",
+      "tags": ["food", "outdoors", "music"],
+      "price": "$$",
+      "url": "https://littleisland.org/event/ghetto-gastro-red-rice/2026-08-21/",
+      "source": "Little Island"
+    },
+    {
+      "title": "Mike Vecchione, Kyle Dunnigan, Bonnie McFarlane",
+      "date": "2026-08-21",
+      "venue": "The Stand",
+      "neighborhood": "NoHo",
+      "tags": ["comedy"],
+      "price": "$$",
+      "url": "https://thestandnyc.com/shows/show/13542/2026-08-21-200000-the-stand-presents",
+      "source": "The Stand"
+    },
+    {
+      "title": "Anime NYC",
+      "date": "2026-08-21",
+      "endDate": "2026-08-23",
+      "venue": "Javits Center",
+      "neighborhood": "Hudson Yards",
+      "tags": ["art", "film"],
+      "price": "$$",
+      "url": "https://animenyc.com/",
+      "source": "Anime NYC"
+    },
+    {
+      "title": "Movies with a View",
+      "date": "2026-08-21",
+      "venue": "Brooklyn Bridge Park, Pier 1",
+      "neighborhood": "DUMBO",
+      "tags": ["film", "outdoors", "free"],
+      "price": "free",
+      "url": "https://www.brooklynbridgepark.org/events/",
+      "source": "Brooklyn Bridge Park"
+    },
+    {
+      "title": "Smorgasburg in Central Park",
+      "date": "2026-08-23",
+      "venue": "Central Park",
+      "neighborhood": "Central Park",
+      "tags": ["food", "outdoors"],
+      "price": "$",
+      "url": "https://www.smorgasburg.com/",
+      "source": "Smorgasburg"
+    },
+    {
+      "title": "Sunset DJ Sessions at QC Spa",
+      "date": "2026-08-22",
+      "venue": "QC Terme New York",
+      "neighborhood": "Governors Island",
+      "tags": ["wellness", "outdoors", "music"],
+      "price": "$$$",
+      "url": "https://www.qcterme.com/en/new-york/qc-spa-new-york",
+      "source": "Time Out New York"
+    },
+    {
+      "title": "Second City: Ruthless Acts of Kindness",
+      "date": "2026-08-21",
+      "venue": "The Second City Brooklyn",
+      "neighborhood": "Brooklyn",
+      "tags": ["comedy"],
+      "price": "$$",
+      "url": "https://www.secondcity.com/shows/new-york/",
+      "source": "The Second City"
+    },
+    {
+      "title": "Iris van Herpen: Sculpting the Senses",
+      "date": "2026-08-20",
+      "endDate": "2026-09-30",
+      "venue": "Brooklyn Museum",
+      "neighborhood": "Prospect Heights",
+      "tags": ["art"],
+      "price": "$",
+      "url": "https://www.brooklynmuseum.org/",
+      "source": "Brooklyn Museum"
+    },
+    {
+      "title": "It's Alive! A Century of Animation",
+      "date": "2026-08-20",
+      "endDate": "2026-09-30",
+      "venue": "MoMA",
+      "neighborhood": "Midtown",
+      "tags": ["art", "film"],
+      "price": "$",
+      "url": "https://www.moma.org/",
+      "source": "MoMA"
+    },
+    {
+      "title": "Coney Island Fireworks",
+      "date": "2026-08-21",
+      "venue": "Coney Island Beach",
+      "neighborhood": "Coney Island",
+      "tags": ["outdoors", "free"],
+      "price": "free",
+      "url": "https://www.coneyisland.com/",
+      "source": "Coney Island"
+    }
+  ],
+  "venues": [
+    {
+      "name": "The Second City Brooklyn",
+      "hood": "Brooklyn",
+      "kind": "venue",
+      "tags": ["comedy"],
+      "status": "new",
+      "url": "https://www.secondcity.com/shows/new-york/",
+      "source": "Time Out New York"
+    },
+    {
+      "name": "Little Island",
+      "hood": "Hudson River Park",
+      "kind": "venue",
+      "tags": ["outdoors", "food", "art"],
+      "status": "hot",
+      "url": "https://littleisland.org/",
+      "source": "Little Island"
+    },
+    {
+      "name": "MoMA PS1",
+      "hood": "Long Island City",
+      "kind": "venue",
+      "tags": ["art", "nightlife", "music"],
+      "status": "hot",
+      "url": "https://www.momaps1.org/",
+      "source": "MoMA PS1"
+    },
+    {
+      "name": "The Stand",
+      "hood": "NoHo",
+      "kind": "venue",
+      "tags": ["comedy", "food"],
+      "status": "classic",
+      "url": "https://thestandnyc.com/",
+      "bookVia": "https://thestandnyc.com/shows",
+      "source": "The Stand"
+    },
+    {
+      "name": "Smorgasburg",
+      "hood": "Central Park / Williamsburg",
+      "kind": "venue",
+      "tags": ["food", "outdoors"],
+      "status": "classic",
+      "url": "https://www.smorgasburg.com/",
+      "source": "Smorgasburg"
+    }
+  ]
+}
