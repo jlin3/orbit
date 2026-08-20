@@ -27,6 +27,26 @@ interests, your neighborhoods, your budget — and cross-reference your circle t
 a time, and each one converts to a plan, saves to your library, or shares as a link.
 
 Weather comes from Open-Meteo (keyless), so a rainy Friday quietly pushes the picks indoors.
+Picks are grounded: the request carries the top ~20 candidates from your taste engine, so
+the model prefers things your own sources already vetted (and verifies them with search).
+
+### The taste engine
+
+Events *and* venues flow in from real sources — newsletters
+([docs/sources.md](docs/sources.md)), an Instagram sidecar
+([agents/instagram](agents/instagram)), reservation confirmations, weekly openings scans,
+and web search. Everything merges through `POST /api/ingest`: a re-mention is **buzz**,
+not a duplicate, and three independent sources in a month promote a spot to *hot*.
+Save (✦) or dismiss (✕) on any card trains per-tag taste weights that drive all ranking,
+on-device.
+
+- **Reservations** — [agents/reservations](agents/reservations) checks real Resy table
+  availability for your top unbooked picks ("Resy: tables Thu 19:00–21:00"), and every
+  restaurant rec carries a booking deep link. Confirmation emails (Resy, Artemis, Resx,
+  OpenTable…) auto-create plans via `POST /api/plans/ingest` and mark venues visited.
+- **Shared city feed** — the proxy serves `GET /feed?city=…` from Workers KV: one
+  ingestion run feeds every Orbit user in that city. Profiles, saves, and visits never
+  touch the server; the PWA pulls the shared feed and ranks it locally.
 
 ### Everything else
 
@@ -45,9 +65,10 @@ Weather comes from Open-Meteo (keyless), so a rainy Friday quietly pushes the pi
 - **Sharing** — any pick or full itinerary compresses into the URL fragment
   (`#s=…`, deflate-raw + base64url). Recipients get a read-only view of the plan and a way
   to start their own Orbit. Nothing is uploaded and no account exists to create.
-- **Digest** — daily 8am agent (Claude scheduled task on the Mac) pulls events for your
-  city matched to the profile, loads them into Orbit, and delivers the digest by
-  **Slack webhook** and/or email.
+- **Digest** — daily 8am agent (Claude scheduled task on the Mac) runs the full pipeline
+  (newsletters → reservations → Instagram → openings → events → availability → feed
+  publish) and delivers the digest — including **New & buzzing** and **Restaurants to
+  book** — by **Slack webhook** and/or email.
 
 ## Design
 
@@ -62,7 +83,8 @@ pipeline. `prefers-reduced-motion` disables the starfield and all motion. Instal
 
 ## API (local mode, used by the daily agent)
 
-- `GET  /api/digest` · `POST /api/events` · `GET /api/calendar.ics`
+- `GET  /api/digest` · `POST /api/ingest` · `POST /api/feedback` · `POST /api/plans/ingest`
+- `POST /api/events` (legacy overwrite) · `GET /api/calendar.ics`
 - `GET  /api/connections` · `POST /api/import/macos-contacts` · `POST /api/setup/launchagent`
 - `GET/PUT /api/state`
 
