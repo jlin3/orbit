@@ -4,6 +4,8 @@ A personal relationship manager built around one principle: **fewer people, deep
 It keeps your closest people close — then tells you exactly what to do with them tonight
 or this weekend, using real listings rather than generic advice.
 
+**Share this with anyone:** [https://getorbit.pages.dev](https://getorbit.pages.dev) — they tap Begin, two minutes, they have their own Orbit. No account.
+
 Zero dependencies, no build step. One codebase runs two ways:
 
 - **Local (Mac):** `node server.js` → http://localhost:4747 — full API: contacts import,

@@ -113,6 +113,8 @@ async function providerFetch(url, headers, body) {
 }
 
 const DEFAULT_ORIGINS = [
+  'https://getorbit.pages.dev',
+  'https://getorbit.fyi',
   'https://jlin3.github.io',
   'http://localhost:4747',
   'http://127.0.0.1:4747',
@@ -180,7 +182,7 @@ async function overLimit(request, env) {
       /* fall through to the in-memory counter */
     }
   }
-  const max = Number(env.DAILY_LIMIT || 40);
+  const max = Number(env.DAILY_LIMIT || 200);
   const day = new Date().toISOString().slice(0, 10);
   const key = `${ip}|${day}`;
   const n = (memHits.get(key) || 0) + 1;
