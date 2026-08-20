@@ -80,6 +80,10 @@ function normalizeState() {
   S.settings.integrations = S.settings.integrations || {};
   S.meta = S.meta || { updatedAt: 0 };
   S.events = S.events || [];
+  S.venues = S.venues || [];
+  S.settings.tasteWeights = S.settings.tasteWeights || {};
+  for (const e of S.events) if (!e.id) e.id = uid();
+  for (const v of S.venues) if (!v.id) v.id = uid();
   S.streaks = S.streaks || { focusDays: 0, bestFocus: 0, lastFocusDate: null, lastReviewDate: null };
   S.history = S.history || [];
   S.focus = S.focus || null;
@@ -129,6 +133,124 @@ function persist() {
   }, 300);
 }
 function save() { persist(); render(); }
+
+// ---------- taste engine (client) ----------
+// Mirrors the scoring/feedback logic in server.js so web-mode users get the
+// same ranking without a local server. Feedback nudges per-tag weights.
+const normTag = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+function tasteScoreTags(tags) {
+  const interests = new Set((S.settings.interests || []).map(normTag));
+  const weights = S.settings.tasteWeights || {};
+  let score = 0;
+  for (const t of tags || []) {
+    const k = normTag(t);
+    score += (interests.has(k) ? 1 : 0.2) * (weights[k] != null ? weights[k] : 1);
+  }
+  return score;
+}
+
+function hoodBonusClient(hood) {
+  const mine = ((S.settings.profile || {}).neighborhoods || []).map(normTag);
+  const h = normTag(hood);
+  return h && mine.some(m => m && (h.includes(m) || m.includes(h))) ? 1 : 0;
+}
+
+function venueBuzz(v) {
+  const cutoff = addDays(todayIso(), -30);
+  return new Set((v.sources || []).filter(s => (s.date || cutoff) >= cutoff).map(s => normTag(s.name))).size;
+}
+
+function scoreEventClient(e) {
+  const nights = (S.settings.profile || {}).nights || [];
+  const nightHit = e.date && nights.includes(dayShort(e.date)) ? 0.5 : 0;
+  return tasteScoreTags(e.tags) + hoodBonusClient(e.neighborhood || e.venue) + nightHit
+    + Math.min((e.sources || []).length, 3) * 0.3 + (e.status === 'saved' ? 2 : 0);
+}
+
+function scoreVenueClient(v) {
+  const novelty = { 'opening-soon': 0.75, new: 0.75, hot: 0.5 }[v.status] || 0;
+  return tasteScoreTags(v.tags) + hoodBonusClient(v.hood) + Math.min(venueBuzz(v), 4) * 0.5
+    + novelty + (v.flag === 'saved' ? 2 : 0);
+}
+
+function applyTasteFeedback(kind, id, action) {
+  const item = (kind === 'venue' ? S.venues : S.events).find(x => x.id === id);
+  if (!item) return;
+  if (kind === 'venue') {
+    if (action === 'save') item.flag = 'saved';
+    if (action === 'dismiss') item.flag = 'dismissed';
+  } else {
+    if (action === 'save' || action === 'planned') item.status = 'saved';
+    if (action === 'dismiss') item.status = 'dismissed';
+  }
+  const delta = { save: 0.15, planned: 0.15, dismiss: -0.1 }[action] || 0;
+  if (delta) {
+    const w = S.settings.tasteWeights;
+    for (const t of item.tags || []) {
+      const k = normTag(t);
+      w[k] = Math.round(Math.max(0.2, Math.min(3, (w[k] != null ? w[k] : 1) + delta)) * 100) / 100;
+    }
+  }
+}
+
+// The shared per-city feed: sources ingested once per city, served by the
+// concierge proxy, ranked here against the local profile. Personal signals
+// (saves, dismissals, visits) never leave the device.
+function mergeFeedIntoState(feed) {
+  const today = todayIso();
+  let changed = false;
+  for (const raw of feed.events || []) {
+    if (!raw || !raw.title) continue;
+    const key = normTag(raw.title) + '|' + (raw.date || '');
+    const ex = S.events.find(e => normTag(e.title) + '|' + (e.date || '') === key);
+    if (ex) {
+      ex.tags = [...new Set([...(ex.tags || []), ...(raw.tags || [])])];
+      for (const f of ['venue', 'url', 'neighborhood', 'price', 'endDate']) if (raw[f] && !ex[f]) ex[f] = raw[f];
+      if (raw.sources) ex.sources = raw.sources;
+    } else {
+      S.events.push({ ...raw, id: uid(), status: 'new' });
+      changed = true;
+    }
+  }
+  for (const raw of feed.venues || []) {
+    if (!raw || !raw.name) continue;
+    const ex = S.venues.find(v => normTag(v.name) === normTag(raw.name));
+    if (ex) {
+      ex.tags = [...new Set([...(ex.tags || []), ...(raw.tags || [])])];
+      for (const f of ['hood', 'kind', 'url', 'bookVia', 'notes', 'status'] ) if (raw[f] && !ex[f]) ex[f] = raw[f];
+      if (raw.availability) ex.availability = raw.availability;
+      if (raw.sources) ex.sources = raw.sources;
+    } else {
+      const { flag, visited, ...rest } = raw;
+      S.venues.push({ ...rest, id: uid(), visited: [] });
+      changed = true;
+    }
+  }
+  S.events = S.events.filter(e => {
+    const end = e.endDate || e.date;
+    return !end || end >= addDays(today, -7);
+  });
+  return changed;
+}
+
+async function refreshCityFeed() {
+  if (!S?.settings?.city) return false;
+  if (Date.now() - (S.meta.feedAt || 0) < 6 * 3600e3) return false;
+  const city = S.settings.city.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  try {
+    const res = await fetch(`${proxyUrl()}/feed?city=${city}`);
+    if (!res.ok) return false;
+    const feed = await res.json();
+    if (!feed.updatedAt) return false;
+    const changed = mergeFeedIntoState(feed);
+    S.meta.feedAt = Date.now();
+    persist();
+    return changed;
+  } catch {
+    return false;
+  }
+}
 
 // ---------- encrypted cross-device sync (private gist, E2E) ----------
 const LS_SYNC = 'orbit-sync';
@@ -859,6 +981,22 @@ function personByFirstName(name) {
 }
 
 // ---------- the run ----------
+// Top-scored events/venues from the taste engine, sent along so the model
+// grounds its picks in things the user's own sources already vetted.
+function conciergeCandidates(dates) {
+  const evs = (S.events || [])
+    .filter(e => e.status !== 'dismissed' && e.date && dates.includes(e.date))
+    .sort((a, b) => scoreEventClient(b) - scoreEventClient(a))
+    .slice(0, 12)
+    .map(e => ({ title: e.title, venue: e.venue, neighborhood: e.neighborhood, date: e.date, tags: e.tags, url: e.url }));
+  const vns = (S.venues || [])
+    .filter(v => v.flag !== 'dismissed')
+    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
+    .slice(0, 8)
+    .map(v => ({ name: v.name, hood: v.hood, tags: v.tags, availability: v.availability, url: v.url || v.bookVia }));
+  return [...evs, ...vns].slice(0, 20);
+}
+
 async function runConcierge({ mode, vibe = '', budget = '', force = false } = {}) {
   const city = S.settings.city;
   if (!city) { toast('Add your city first ✦'); location.hash = '#welcome'; return; }
@@ -901,6 +1039,7 @@ async function runConcierge({ mode, vibe = '', budget = '', force = false } = {}
       datingMode: prof.datingMode || '',
     },
     companions: companionsPayload(),
+    candidates: conciergeCandidates(dates),
   };
   if (S.settings.integrations?.provider) body.provider = S.settings.integrations.provider;
 
@@ -1254,7 +1393,14 @@ VIEWS.today = function renderToday() {
   const upcoming = (S.plans || [])
     .filter(pl => pl.status !== 'done' && pl.date >= today && pl.date <= addDays(today, 14))
     .sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
-  const events = (S.events || []).filter(e => !e.date || e.date >= today);
+  const events = (S.events || [])
+    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today))
+    .sort((a, b) => scoreEventClient(b) - scoreEventClient(a))
+    .slice(0, 12);
+  const hotVenues = (S.venues || [])
+    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
+    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
+    .slice(0, 6);
   const act = activePeople();
   const prof = S.settings.profile || {};
 
@@ -1431,14 +1577,38 @@ VIEWS.today = function renderToday() {
       ? `<div class="plan-list">${upcoming.map((pl, i) => planRow(pl, i)).join('')}</div>`
       : `<div class="empty rise">Nothing planned. Pick someone above and hit <b>Plan</b>, or browse <a href="#ideas">Ideas</a>.</div>`}
 
-    <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">curated for your interests</span></h2>
+    <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">ranked for your taste — ✦ trains it</span></h2>
     ${events.length
       ? `<div class="event-list">${events.map((e, i) => `
           <div class="event-row rise" style="--i:${i}">
             <span class="date">${e.date ? fmtDate(e.date) : ''}</span>
             <span>${e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title)}</a>` : esc(e.title)}${e.venue ? ` <span class="faint">@ ${esc(e.venue)}</span>` : ''}</span>
+            <span class="actions" style="margin-left:auto;display:inline-flex;gap:4px;flex-shrink:0">
+              ${e.status === 'saved'
+                ? '<span class="chip ok">saved</span>'
+                : `<button class="btn tiny ghost" data-act="evSave" data-id="${e.id}" title="More like this">✦</button>`}
+              <button class="btn tiny ghost" data-act="evDismiss" data-id="${e.id}" title="Not for me">✕</button>
+            </span>
           </div>`).join('')}</div>`
       : `<div class="empty rise">Your daily agent fills this in each morning — events matched to your interests land here and in your inbox.</div>`}
+
+    ${hotVenues.length ? `
+    <h2>New & buzzing <span class="sub">openings and hot spots from your sources</span></h2>
+    <div class="event-list">${hotVenues.map((v, i) => {
+      const b = venueBuzz(v);
+      return `
+        <div class="event-row rise" style="--i:${i}">
+          <span class="date">${v.status === 'opening-soon' ? 'soon' : esc(v.status)}</span>
+          <span>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.name)}</a>` : esc(v.name)}${v.hood ? ` <span class="faint">· ${esc(v.hood)}</span>` : ''}${b > 1 ? ` <span class="chip">${b} sources</span>` : ''}${v.availability ? ` <span class="faint">· ${esc(v.availability)}</span>` : ''}</span>
+          <span class="actions" style="margin-left:auto;display:inline-flex;gap:4px;flex-shrink:0">
+            ${v.bookVia ? `<a class="btn tiny accent" href="${esc(v.bookVia)}" target="_blank" rel="noopener">Book</a>` : ''}
+            ${v.flag === 'saved'
+              ? '<span class="chip ok">saved</span>'
+              : `<button class="btn tiny ghost" data-act="vnSave" data-id="${v.id}" title="More like this">✦</button>`}
+            <button class="btn tiny ghost" data-act="vnDismiss" data-id="${v.id}" title="Not for me">✕</button>
+          </span>
+        </div>`;
+    }).join('')}</div>` : ''}
   `;
 
   animateStats(onTrack);
@@ -1878,9 +2048,23 @@ function buildDigestMarkdown() {
     for (const n of nudges) lines.push(`- **${n.name}** (${n.stage}): ${n.nextStep}`);
   }
   lines.push('', `## Happening in ${S.settings.city || 'your city'}`);
-  const events = (S.events || []).filter(e => !e.date || e.date >= today).slice(0, 12);
+  const events = (S.events || [])
+    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today))
+    .sort((a, b) => scoreEventClient(b) - scoreEventClient(a))
+    .slice(0, 12);
   if (!events.length) lines.push('No events loaded yet — the daily agent fills these in.');
   for (const e of events) lines.push(`- ${e.date ? e.date + ' — ' : ''}**${e.title}**${e.venue ? ` @ ${e.venue}` : ''}${e.url ? ` (${e.url})` : ''}`);
+  const buzzing = (S.venues || [])
+    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
+    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
+    .slice(0, 6);
+  if (buzzing.length) {
+    lines.push('', '## New & buzzing');
+    for (const v of buzzing) {
+      const b = venueBuzz(v);
+      lines.push(`- **${v.name}**${v.hood ? ` (${v.hood})` : ''} — ${v.status === 'opening-soon' ? 'opening soon' : v.status}${b > 1 ? ` · ${b} sources this month` : ''}${v.bookVia ? ` — book: ${v.bookVia}` : ''}`);
+    }
+  }
   return lines.join('\n');
 }
 
@@ -2932,6 +3116,12 @@ function addToTriage(names) {
 }
 
 const ACTIONS = {
+  // ---------- taste feedback ----------
+  evSave(id) { applyTasteFeedback('event', id, 'save'); save(); toast('Noted — more like this ✦'); },
+  evDismiss(id) { applyTasteFeedback('event', id, 'dismiss'); save(); },
+  vnSave(id) { applyTasteFeedback('venue', id, 'save'); save(); toast('Noted — more like this ✦'); },
+  vnDismiss(id) { applyTasteFeedback('venue', id, 'dismiss'); save(); },
+
   // ---------- concierge ----------
   cgMode(mode) {
     location.hash = mode === 'weekend' ? '#weekend' : '#tonight';
@@ -3294,6 +3484,7 @@ $('#themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ?
   snapshotHistory();
   persist();
   initStarfield();
+  refreshCityFeed().then(changed => { if (changed && !location.hash.slice(1).startsWith('s=')) render(); });
 
   // A shared link arrives as #s=<token>. Decode before the first paint so the
   // recipient never sees someone else's Today view flash past.
