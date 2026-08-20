@@ -1,15 +1,19 @@
 {
-  "name": "Orbit",
+  "name": "Orbit — fewer people, deeper bonds",
   "short_name": "Orbit",
-  "description": "Fewer people, deeper bonds. A personal relationship manager.",
+  "description": "Keeps your closest people close, and tells you exactly what to do tonight and this weekend.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f5f1e8",
-  "theme_color": "#f5f1e8",
+  "background_color": "#0d0b14",
+  "theme_color": "#0d0b14",
   "icons": [
     { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
     { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "What should I do tonight?", "url": "./#tonight" },
+    { "name": "Plan my weekend", "url": "./#weekend" }
   ]
 }

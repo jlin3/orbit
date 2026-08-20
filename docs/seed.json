@@ -7,7 +7,7 @@
     },
     "datingCadence": 5,
     "email": "",
-    "city": "New York",
+    "city": "",
     "interests": [
       "live music",
       "comedy",
@@ -37,7 +37,8 @@
       "cost": "$$",
       "best": "either",
       "notes": "Book ahead; the 11pm show gets drop-ins.",
-      "favorite": true
+      "favorite": true,
+      "city": "New York"
     },
     {
       "id": "i02",
@@ -50,7 +51,8 @@
       "cost": "$",
       "best": "either",
       "notes": "Saturdays Prospect Park, Fridays WTC.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i03",
@@ -63,7 +65,8 @@
       "cost": "$",
       "best": "date",
       "notes": "Classic low-stakes first date.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i04",
@@ -76,7 +79,8 @@
       "cost": "$$",
       "best": "date",
       "notes": "8pm set, arrive early for good seats.",
-      "favorite": true
+      "favorite": true,
+      "city": "New York"
     },
     {
       "id": "i05",
@@ -89,7 +93,8 @@
       "cost": "free",
       "best": "friends",
       "notes": "Summer weekends, first-come first-served.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i06",
@@ -102,7 +107,8 @@
       "cost": "$$",
       "best": "date",
       "notes": "Order the truffle popcorn.",
-      "favorite": true
+      "favorite": true,
+      "city": "New York"
     },
     {
       "id": "i07",
@@ -114,7 +120,8 @@
       "cost": "$$",
       "best": "either",
       "notes": "Go on a weekday; cash for platza.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i08",
@@ -126,7 +133,8 @@
       "cost": "$$",
       "best": "friends",
       "notes": "Day passes available; good for groups.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i09",
@@ -139,7 +147,8 @@
       "cost": "$",
       "best": "either",
       "notes": "Pair with Greek food on Broadway after.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i10",
@@ -151,7 +160,8 @@
       "cost": "$",
       "best": "date",
       "notes": "Free Fridays before noon.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i11",
@@ -165,7 +175,8 @@
       "cost": "$$",
       "best": "friends",
       "notes": "Private room at Gagopa after Jongro.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i12",
@@ -179,7 +190,8 @@
       "cost": "$$$",
       "best": "date",
       "notes": "Golden hour. No reservations for the bow.",
-      "favorite": true
+      "favorite": true,
+      "city": "New York"
     },
     {
       "id": "i13",
@@ -192,7 +204,8 @@
       "cost": "$$",
       "best": "date",
       "notes": "One-off wheel classes on weekends.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i14",
@@ -205,7 +218,8 @@
       "cost": "$",
       "best": "friends",
       "notes": "Long Meadow, bring a speaker and a frisbee.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i15",
@@ -217,7 +231,8 @@
       "cost": "$",
       "best": "date",
       "notes": "Check the repertory calendar.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i16",
@@ -230,7 +245,8 @@
       "cost": "$$",
       "best": "either",
       "notes": "Galleries open late on Fridays.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i17",
@@ -243,7 +259,8 @@
       "cost": "$",
       "best": "friends",
       "notes": "Play the hustlers, lose $5, laugh about it.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i18",
@@ -257,7 +274,8 @@
       "cost": "$$$",
       "best": "date",
       "notes": "22nd floor of the William Vale.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i19",
@@ -270,7 +288,8 @@
       "cost": "$",
       "best": "either",
       "notes": "Ferry from Wall St; rent Citi Bikes there.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i20",
@@ -283,7 +302,8 @@
       "cost": "$$",
       "best": "friends",
       "notes": "Shop at Big Night for the table. 6 people max, one long conversation.",
-      "favorite": true
+      "favorite": true,
+      "city": "New York"
     },
     {
       "id": "i21",
@@ -297,7 +317,8 @@
       "cost": "$",
       "best": "date",
       "notes": "Rooftop open May–Oct.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     },
     {
       "id": "i22",
@@ -310,7 +331,8 @@
       "cost": "$",
       "best": "friends",
       "notes": "Standing weekend slot — easy recurring hang.",
-      "favorite": false
+      "favorite": false,
+      "city": "New York"
     }
   ],
   "plans": [],
