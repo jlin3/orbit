@@ -18,13 +18,10 @@ DAILY_LIMIT = "40"
 # ANTHROPIC_MODEL = "claude-sonnet-4-5"
 # GEMINI_MODEL = "gemini-2.5-flash"
 
-# The shared per-city feed. Create the namespace, paste its id, and set the
-# write key:
-#   npx wrangler kv namespace create FEED
-#   npx wrangler secret put FEED_ADMIN_KEY
-# [[kv_namespaces]]
-# binding = "FEED"
-# id = "<paste the id printed by the create command>"
+# Shared per-city feed. Write key: wrangler secret put FEED_ADMIN_KEY
+[[kv_namespaces]]
+binding = "FEED"
+id = "ffc2435266eb496abdabd4c1b00a1601"
 
 # Native per-IP rate limiting. Uncomment to enforce a real limit across
 # isolates; without it the Worker falls back to a weaker in-memory counter.
