@@ -156,3 +156,36 @@ test('tonight mode asks for four options and leaves bring null with no circle', 
   assert.match(p, /Emit 4 lines/);
   assert.match(p, /leave "bring" null/);
 });
+
+test('grounded candidates appear in the prompt, capped at 20', () => {
+  const candidates = Array.from({ length: 25 }, (_, i) => ({
+    name: `Spot ${i}`, hood: 'Williamsburg', tags: ['food'], availability: 'Resy: tables Thu 19:00',
+  }));
+  const p = buildPrompt({ mode: 'tonight', city: 'New York', date: '2026-08-20', candidates });
+  assert.match(p, /VETTED CANDIDATES/);
+  assert.match(p, /Spot 0 \(Williamsburg\) Resy: tables Thu 19:00/);
+  assert.match(p, /Spot 19/);
+  assert.doesNotMatch(p, /Spot 20/);
+});
+
+test('no candidates means no vetted section', () => {
+  const p = buildPrompt({ mode: 'tonight', city: 'New York', date: '2026-08-20' });
+  assert.doesNotMatch(p, /VETTED CANDIDATES/);
+});
+
+test('anthropic stream shape produces picks and search status', async () => {
+  const events = await collect(transform(providerStream([
+    'data: {"type":"content_block_start","content_block":{"type":"server_tool_use"}}\n\n',
+    `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: JSON.stringify(PICK_A) + '\n' } })}\n\n`,
+  ]), 'anthropic'));
+  assert.equal(events.filter(e => e.type === 'pick').length, 1);
+  assert.ok(events.filter(e => e.type === 'status').length >= 2);
+});
+
+test('gemini stream shape produces picks', async () => {
+  const events = await collect(transform(providerStream([
+    `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(PICK_A) + '\n' }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(PICK_B) + '\n' }] } }] })}\n\n`,
+  ]), 'gemini'));
+  assert.equal(events.filter(e => e.type === 'pick').length, 2);
+});

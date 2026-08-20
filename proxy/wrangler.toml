@@ -15,6 +15,16 @@ DAILY_LIMIT = "40"
 # Override the default models if you want cheaper or newer ones.
 # OPENAI_MODEL = "gpt-5.6"
 # XAI_MODEL = "grok-4.6"
+# ANTHROPIC_MODEL = "claude-sonnet-4-5"
+# GEMINI_MODEL = "gemini-2.5-flash"
+
+# The shared per-city feed. Create the namespace, paste its id, and set the
+# write key:
+#   npx wrangler kv namespace create FEED
+#   npx wrangler secret put FEED_ADMIN_KEY
+# [[kv_namespaces]]
+# binding = "FEED"
+# id = "<paste the id printed by the create command>"
 
 # Native per-IP rate limiting. Uncomment to enforce a real limit across
 # isolates; without it the Worker falls back to a weaker in-memory counter.
@@ -24,6 +34,8 @@ DAILY_LIMIT = "40"
 # namespace_id = "1001"
 # simple = { limit = 40, period = 60 }
 
-# Secrets are never stored here. Set at least one:
+# Secrets are never stored here. Set at least one provider key:
 #   wrangler secret put OPENAI_API_KEY
 #   wrangler secret put XAI_API_KEY
+#   wrangler secret put ANTHROPIC_API_KEY
+#   wrangler secret put GEMINI_API_KEY

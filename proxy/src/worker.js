@@ -1,28 +1,116 @@
 // Orbit Concierge — Cloudflare Worker proxy.
 //
-// One endpoint, POST /concierge, that turns an Orbit profile into a set of
-// real, verifiable things to do tonight or this weekend. The provider key
-// lives here so shared users never need one of their own.
+// Two jobs:
 //
-// OpenAI and xAI both expose the same /v1/responses + web_search tool shape,
-// so a single adapter drives both (xAI additionally gets x_search).
+//   POST /concierge      — turns an Orbit profile into real, verifiable things
+//                          to do tonight or this weekend (SSE stream of picks).
+//   GET/POST /feed       — the shared per-city feed: events + venues ingested
+//                          once per city (by the ingestion agent) and served to
+//                          every Orbit user there. Profiles never touch the
+//                          server; ranking happens on-device.
+//
+// Provider adapters: OpenAI and xAI share the /v1/responses + web_search
+// shape; Anthropic and Gemini get their own `call`/`interpret` pair. Each
+// adapter's `interpret` maps one parsed SSE event to {delta|searching|checked|error}.
+
+function responsesProvider(url, keyVar, modelVar, defaultModel, tools) {
+  return {
+    keyVar,
+    modelVar,
+    defaultModel,
+    async call(env, prompt) {
+      return providerFetch(url, {
+        Authorization: `Bearer ${env[keyVar]}`,
+      }, {
+        model: env[modelVar] || defaultModel,
+        input: prompt,
+        tools,
+        stream: true,
+      });
+    },
+    interpret(ev) {
+      if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') return { delta: ev.delta };
+      if (ev.type === 'response.web_search_call.searching') return { searching: true };
+      if (ev.type === 'response.web_search_call.completed') return { checked: true };
+      if (ev.type === 'error' || ev.type === 'response.failed') return { error: ev.message || 'The model stopped early.' };
+      return null;
+    },
+  };
+}
 
 const PROVIDERS = {
-  openai: {
-    url: 'https://api.openai.com/v1/responses',
-    keyVar: 'OPENAI_API_KEY',
-    modelVar: 'OPENAI_MODEL',
-    defaultModel: 'gpt-5.6',
-    tools: () => [{ type: 'web_search' }],
+  openai: responsesProvider(
+    'https://api.openai.com/v1/responses',
+    'OPENAI_API_KEY', 'OPENAI_MODEL', 'gpt-5.6',
+    [{ type: 'web_search' }],
+  ),
+  xai: responsesProvider(
+    'https://api.x.ai/v1/responses',
+    'XAI_API_KEY', 'XAI_MODEL', 'grok-4.6',
+    [{ type: 'web_search' }, { type: 'x_search' }],
+  ),
+  anthropic: {
+    keyVar: 'ANTHROPIC_API_KEY',
+    modelVar: 'ANTHROPIC_MODEL',
+    defaultModel: 'claude-sonnet-4-5',
+    async call(env, prompt) {
+      return providerFetch('https://api.anthropic.com/v1/messages', {
+        'x-api-key': env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      }, {
+        model: env.ANTHROPIC_MODEL || this.defaultModel,
+        max_tokens: 8000,
+        stream: true,
+        messages: [{ role: 'user', content: prompt }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
+      });
+    },
+    interpret(ev) {
+      if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') return { delta: ev.delta.text };
+      if (ev.type === 'content_block_start' && ev.content_block?.type === 'server_tool_use') return { searching: true };
+      if (ev.type === 'error') return { error: ev.error?.message || 'The model stopped early.' };
+      return null;
+    },
   },
-  xai: {
-    url: 'https://api.x.ai/v1/responses',
-    keyVar: 'XAI_API_KEY',
-    modelVar: 'XAI_MODEL',
-    defaultModel: 'grok-4.6',
-    tools: () => [{ type: 'web_search' }, { type: 'x_search' }],
+  gemini: {
+    keyVar: 'GEMINI_API_KEY',
+    modelVar: 'GEMINI_MODEL',
+    defaultModel: 'gemini-2.5-flash',
+    async call(env, prompt) {
+      const model = env.GEMINI_MODEL || this.defaultModel;
+      return providerFetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
+        { 'x-goog-api-key': env.GEMINI_API_KEY },
+        {
+          contents: [{ parts: [{ text: prompt }] }],
+          tools: [{ google_search: {} }],
+        },
+      );
+    },
+    interpret(ev) {
+      const parts = ev.candidates?.[0]?.content?.parts;
+      if (parts) {
+        const text = parts.map(p => p.text || '').join('');
+        if (text) return { delta: text };
+      }
+      if (ev.error) return { error: ev.error.message || 'The model stopped early.' };
+      return null;
+    },
   },
 };
+
+async function providerFetch(url, headers, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`provider responded ${res.status}: ${detail.slice(0, 400)}`);
+  }
+  return res.body;
+}
 
 const DEFAULT_ORIGINS = [
   'https://jlin3.github.io',
@@ -58,8 +146,8 @@ function json(obj, status, origin) {
 function cors(origin) {
   return {
     'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
@@ -119,6 +207,7 @@ function buildPrompt(body) {
     budget = '',
     profile = {},
     companions = [],
+    candidates = [],
   } = body;
 
   const {
@@ -133,6 +222,19 @@ function buildPrompt(body) {
   const window = mode === 'weekend'
     ? `the upcoming weekend (${dates.join(', ') || date})`
     : `${date}`;
+
+  // Grounded candidates come from the user's taste engine (newsletters, IG,
+  // openings scans, availability checks) — already matched to their profile.
+  const grounded = (candidates || []).slice(0, 20).map(c => {
+    const bits = [c.title || c.name];
+    if (c.venue) bits.push(`@ ${c.venue}`);
+    if (c.hood || c.neighborhood) bits.push(`(${c.hood || c.neighborhood})`);
+    if (c.date) bits.push(c.date);
+    if (c.availability) bits.push(c.availability);
+    if (c.tags?.length) bits.push(`[${c.tags.slice(0, 4).join(', ')}]`);
+    if (c.url) bits.push(c.url);
+    return `- ${bits.join(' ')}`;
+  });
 
   const people = companions.length
     ? companions.map(c => {
@@ -160,6 +262,11 @@ function buildPrompt(body) {
     'THEIR CIRCLE (suggest who to bring, favoring people they have not seen in a while)',
     people,
     '',
+    ...(grounded.length ? [
+      'VETTED CANDIDATES (from their own sources — newsletters, local accounts, availability checks). Prefer these when they fit the request; verify dates and hours with search before using one:',
+      ...grounded,
+      '',
+    ] : []),
     'RULES',
     `1. Search the web first. Only suggest things that are actually happening in ${city} on the given dates, or venues you have confirmed are open.`,
     '2. Prefer primary sources: venue sites, ticketing pages, event listings, local press. Check dates carefully — never surface a past event.',
@@ -178,28 +285,6 @@ function buildPrompt(body) {
   ];
 
   return lines.filter(l => l !== null).join('\n');
-}
-
-async function callProvider(providerKey, env, prompt) {
-  const p = PROVIDERS[providerKey];
-  const res = await fetch(p.url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env[p.keyVar]}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: env[p.modelVar] || p.defaultModel,
-      input: prompt,
-      tools: p.tools(),
-      stream: true,
-    }),
-  });
-  if (!res.ok || !res.body) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`${providerKey} responded ${res.status}: ${detail.slice(0, 400)}`);
-  }
-  return res.body;
 }
 
 // Reads the provider's SSE stream, pulls out text deltas, and re-emits our own
@@ -253,19 +338,21 @@ function transform(providerStream, providerKey) {
               let ev;
               try { ev = JSON.parse(payload); } catch { continue; }
 
-              if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
-                lineBuffer += ev.delta;
+              const sig = PROVIDERS[providerKey].interpret(ev);
+              if (!sig) continue;
+              if (sig.delta) {
+                lineBuffer += sig.delta;
                 let nl;
                 while ((nl = lineBuffer.indexOf('\n')) !== -1) {
                   flushLine(lineBuffer.slice(0, nl));
                   lineBuffer = lineBuffer.slice(nl + 1);
                 }
-              } else if (ev.type === 'response.web_search_call.searching') {
+              } else if (sig.searching) {
                 send({ type: 'status', text: 'Reading listings and venue pages…' });
-              } else if (ev.type === 'response.web_search_call.completed') {
+              } else if (sig.checked) {
                 send({ type: 'status', text: 'Cross-checking dates…' });
-              } else if (ev.type === 'error' || ev.type === 'response.failed') {
-                send({ type: 'error', message: ev.message || 'The model stopped early.' });
+              } else if (sig.error) {
+                send({ type: 'error', message: sig.error });
               }
             }
           }
@@ -303,7 +390,47 @@ export default {
         ok: true,
         service: 'orbit-concierge',
         providers: Object.keys(PROVIDERS).filter(k => env[PROVIDERS[k].keyVar]),
+        feed: Boolean(env.FEED),
       }, 200, origin);
+    }
+
+    // The shared per-city feed. Public read (cached), admin-key write.
+    if (url.pathname === '/feed') {
+      if (!env.FEED) return json({ error: 'feed not configured on this proxy (bind a FEED KV namespace)' }, 503, origin);
+      const city = (url.searchParams.get('city') || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+      if (request.method === 'GET') {
+        if (!city) return json({ error: 'city is required, e.g. /feed?city=new-york' }, 400, origin);
+        const raw = await env.FEED.get(`feed:${city}`);
+        return new Response(raw || JSON.stringify({ city, updatedAt: null, events: [], venues: [] }), {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'public, max-age=900',
+            ...cors(origin),
+          },
+        });
+      }
+
+      if (request.method === 'POST') {
+        const auth = request.headers.get('Authorization') || '';
+        if (!env.FEED_ADMIN_KEY || auth !== `Bearer ${env.FEED_ADMIN_KEY}`) {
+          return json({ error: 'unauthorized' }, 401, origin);
+        }
+        let body;
+        try { body = await request.json(); } catch { return json({ error: 'Expected a JSON body' }, 400, origin); }
+        const postCity = (body.city || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        if (!postCity) return json({ error: 'city is required' }, 400, origin);
+        const doc = {
+          city: postCity,
+          updatedAt: new Date().toISOString(),
+          events: Array.isArray(body.events) ? body.events.slice(0, 200) : [],
+          venues: Array.isArray(body.venues) ? body.venues.slice(0, 200) : [],
+        };
+        await env.FEED.put(`feed:${postCity}`, JSON.stringify(doc));
+        return json({ ok: true, city: postCity, events: doc.events.length, venues: doc.venues.length }, 200, origin);
+      }
+
+      return json({ error: 'GET or POST /feed' }, 405, origin);
     }
 
     if (url.pathname !== '/concierge' || request.method !== 'POST') {
@@ -324,14 +451,14 @@ export default {
 
     const providerKey = pickProvider(env, body.provider);
     if (!providerKey) {
-      return json({ error: 'No provider key configured on this proxy (set OPENAI_API_KEY or XAI_API_KEY).' }, 503, origin);
+      return json({ error: 'No provider key configured on this proxy (set OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, or XAI_API_KEY).' }, 503, origin);
     }
 
     let providerStream;
     try {
-      providerStream = await callProvider(providerKey, env, buildPrompt(body));
+      providerStream = await PROVIDERS[providerKey].call(env, buildPrompt(body));
     } catch (err) {
-      return json({ error: String(err?.message || err) }, 502, origin);
+      return json({ error: `${providerKey}: ${String(err?.message || err)}` }, 502, origin);
     }
 
     return new Response(transform(providerStream, providerKey), {
