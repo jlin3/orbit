@@ -1,5 +1,5 @@
 // Orbit service worker — app-shell cache, network-first for HTML
-const VERSION = 'orbit-v3';
+const VERSION = 'orbit-v4-deepfield';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg', './seed.json'];
 
 self.addEventListener('install', e => {

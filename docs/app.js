@@ -4,6 +4,11 @@
 const LOCAL = location.port === '4747'; // served by the Mac server (has /api); otherwise static web/PWA
 const WEB_URL = 'https://jlin3.github.io/orbit/';
 
+// The concierge proxy holds the model key, so people you share Orbit with get
+// real plans without bringing an API key of their own. Override in Connect.
+const DEFAULT_PROXY_URL = 'https://orbit-concierge.jlin3.workers.dev';
+const proxyUrl = () => (S?.settings?.integrations?.proxyUrl || DEFAULT_PROXY_URL).replace(/\/+$/, '');
+
 // ---------- state ----------
 let S = null;
 let route = location.hash.slice(1) || 'today';
@@ -11,6 +16,7 @@ let lastRoute = null;
 let peopleFilter = 'active';
 let peopleSearch = '';
 let ideaFilter = null;
+let sharedPayload = null; // set when the URL carries a shared itinerary
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -51,6 +57,20 @@ function startOfWeek() {
   return d.toLocaleDateString('en-CA');
 }
 
+const dayShort = iso =>
+  new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+
+// Friday through Sunday of the weekend we're heading into. On a Saturday that
+// means today and tomorrow, not six days from now.
+function weekendDates() {
+  const today = todayIso();
+  const dow = new Date(today + 'T12:00:00').getDay(); // 0 Sun … 6 Sat
+  if (dow === 0) return [today];
+  if (dow === 6) return [today, addDays(today, 1)];
+  const fri = addDays(today, (5 - dow + 7) % 7);
+  return [fri, addDays(fri, 1), addDays(fri, 2)];
+}
+
 // ---------- persistence (local server ⇄ browser storage) ----------
 const LS_STATE = 'orbit-state';
 
@@ -64,6 +84,10 @@ function normalizeState() {
   S.history = S.history || [];
   S.focus = S.focus || null;
   S.settings.goals = S.settings.goals || {};
+  S.settings.city = S.settings.city || '';
+  S.concierge = S.concierge || {};
+  S.concierge.runs = S.concierge.runs || {};
+  delete S.concierge.mode; // the route decides this now
   // sample/demo data is retired — real people only
   if (S.people.some(p => p.sample) || (S.plans || []).some(pl => pl.sample)) {
     S.people = S.people.filter(p => !p.sample);
@@ -274,9 +298,15 @@ function duePeople() {
     .sort((a, b) => b.d.overdue - a.d.overdue);
 }
 
+// Seeded ideas are tied to a specific city. Suggesting a Greenwich Village
+// comedy club to someone in Berlin is worse than suggesting nothing.
+function ideaFitsCity(i) {
+  return !i.city || !S.settings.city || i.city === S.settings.city;
+}
+
 function suggestIdea(p) {
   const wantBest = p.type === 'dating' ? ['date', 'either'] : ['friends', 'either'];
-  const pool = S.ideas.filter(i => wantBest.includes(i.best));
+  const pool = S.ideas.filter(i => wantBest.includes(i.best) && ideaFitsCity(i));
   const shared = pool.filter(i => i.tags.some(t => (p.interests || []).includes(t)));
   const list = shared.length ? shared : pool;
   const favs = list.filter(i => i.favorite);
@@ -370,7 +400,8 @@ function snapshotHistory() {
 
 function sparklineSvg() {
   const vals = S.history.slice(-30).map(h => h.score);
-  if (vals.length < 2) return '';
+  // Two points is a line segment, not a trend — it just reads as a stray stroke.
+  if (vals.length < 4) return '';
   const w = 72, h = 22;
   const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1;
   const pts = vals.map((v, i) =>
@@ -500,14 +531,88 @@ function toggleTheme() {
   document.documentElement.dataset.theme = next;
   localStorage.setItem('orbit-theme', next);
   $('#themeBtn').textContent = next === 'dark' ? '☀' : '☾';
+  drawStarfield();
+}
+
+// ---------- starfield ----------
+// Ambient depth behind the whole app. Three parallax layers that drift with
+// scroll and breathe on their own. Skipped entirely under reduced motion.
+let stars = [];
+let starCanvas = null;
+let starCtx = null;
+
+function seedStars() {
+  const w = innerWidth, h = innerHeight;
+  const count = Math.min(190, Math.round((w * h) / 11000));
+  stars = Array.from({ length: count }, (_, i) => ({
+    x: Math.random() * w,
+    y: Math.random() * (h * 1.6),
+    r: 0.4 + Math.random() * 1.5,
+    depth: 0.25 + Math.random() * 0.75,
+    phase: Math.random() * Math.PI * 2,
+    speed: 0.4 + Math.random() * 1.1,
+    hue: i % 11 === 0 ? 'warm' : i % 7 === 0 ? 'cool' : 'plain',
+  }));
+}
+
+function drawStarfield(t = 0) {
+  if (!starCtx || reduceMotion) return;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = innerWidth, h = innerHeight;
+  if (starCanvas.width !== w * dpr || starCanvas.height !== h * dpr) {
+    starCanvas.width = w * dpr;
+    starCanvas.height = h * dpr;
+  }
+  starCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  starCtx.clearRect(0, 0, w, h);
+  const light = document.documentElement.dataset.theme === 'light';
+  const scroll = scrollY;
+  for (const s of stars) {
+    const y = (s.y - scroll * s.depth * 0.35) % (h * 1.6);
+    if (y < -4 || y > h + 4) continue;
+    const twinkle = 0.45 + 0.55 * Math.abs(Math.sin(t / 2400 * s.speed + s.phase));
+    const alpha = (light ? 0.3 : 0.85) * s.depth * twinkle;
+    starCtx.beginPath();
+    starCtx.arc(s.x, y, s.r * (light ? 0.9 : 1), 0, Math.PI * 2);
+    starCtx.fillStyle = s.hue === 'warm'
+      ? `rgba(252, 211, 141, ${alpha})`
+      : s.hue === 'cool'
+        ? `rgba(160, 205, 255, ${alpha})`
+        : light ? `rgba(90, 80, 130, ${alpha})` : `rgba(255, 255, 255, ${alpha})`;
+    starCtx.fill();
+  }
+}
+
+function initStarfield() {
+  starCanvas = $('#starfield');
+  if (!starCanvas || reduceMotion) return;
+  starCtx = starCanvas.getContext('2d');
+  seedStars();
+  addEventListener('resize', () => { seedStars(); drawStarfield(performance.now()); }, { passive: true });
+  const loop = t => { drawStarfield(t); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
 }
 
 // ---------- router ----------
 const VIEWS = {};
+// Routes that borrow another tab's highlight in the nav.
+const ROUTE_ALIAS = { triage: 'people', weekend: 'tonight', build: 'people' };
+
 function render() {
+  // A shared itinerary owns the whole screen — it's the one view a stranger
+  // ever sees, so nothing else should compete with it.
+  if (sharedPayload) {
+    $$('#nav a, #tabbar a').forEach(a => a.classList.remove('active'));
+    document.documentElement.dataset.route = 'shared';
+    return VIEWS.shared();
+  }
+
   const doRender = () => {
+    // Onboarding and shared plans get the whole screen — CSS hides the chrome.
+    document.documentElement.dataset.route = route;
+    const highlight = ROUTE_ALIAS[route] || route;
     $$('#nav a, #tabbar a').forEach(a => {
-      const on = a.dataset.view === route || (a.dataset.view === 'people' && route === 'triage');
+      const on = a.dataset.view === highlight;
       a.classList.toggle('active', on);
       if (a.closest('#nav')) a.style.viewTransitionName = on ? 'nav-pill' : '';
     });
@@ -527,8 +632,37 @@ function render() {
   }
 }
 
+// Opening a share link while Orbit is already loaded is a fragment-only
+// navigation, so this has to handle the token too — not just the cold boot.
+async function applyShareToken(token) {
+  try {
+    const payload = await decodeShare(token);
+    if (!Array.isArray(payload?.picks) || !payload.picks.length) throw new Error('empty');
+    sharedPayload = payload;
+    render();
+    return true;
+  } catch {
+    sharedPayload = null;
+    toast('That share link looks broken');
+    return false;
+  }
+}
+
 window.addEventListener('hashchange', () => {
-  route = location.hash.slice(1) || 'today';
+  const hash = location.hash.slice(1);
+  cgAbort?.abort();
+  cgRun = null;
+
+  if (hash.startsWith('s=')) {
+    applyShareToken(hash.slice(2)).then(ok => {
+      if (!ok) { route = 'today'; render(); }
+    });
+    return;
+  }
+
+  sharedPayload = null;
+  route = hash || 'today';
+  if (route !== 'welcome') ob = null;
   render();
 });
 
@@ -546,36 +680,504 @@ function avatarStyle(p) {
 }
 
 // ---------- constellation ----------
-function constellationSvg() {
+// Your circle drawn as a star chart: tier sets the orbit radius, tier colour is
+// a star temperature, and anyone overdue pulses. Hairlines connect the inner
+// ring back to you so it reads as a system rather than scattered dots.
+function constellationSvg({ interactive = true } = {}) {
   const act = activePeople();
-  const RADII = { inner: 62, close: 96, warm: 130 };
+  const RADII = { inner: 62, close: 98, warm: 134 };
   const cx = 160, cy = 160;
+
   const rings = Object.values(RADII).map(r =>
     `<circle class="ring-line" cx="${cx}" cy="${cy}" r="${r}"/>`).join('');
-  const specks = Array.from({ length: 18 }, (_, i) => {
+
+  const specks = Array.from({ length: 26 }, (_, i) => {
     const a = (hashN('speck' + i) % 3600) / 10 * Math.PI / 180;
-    const r = 30 + (hashN('r' + i) % 125);
-    return `<circle class="speck" cx="${(cx + r * Math.cos(a)).toFixed(1)}" cy="${(cy + r * Math.sin(a)).toFixed(1)}" r="${1 + (i % 2)}"/>`;
+    const r = 26 + (hashN('r' + i) % 132);
+    return `<circle class="speck" cx="${(cx + r * Math.cos(a)).toFixed(1)}" cy="${(cy + r * Math.sin(a)).toFixed(1)}" r="${(0.7 + (i % 3) * 0.5).toFixed(1)}"/>`;
   }).join('');
-  const dots = act.map(p => {
-    const d = dueInfo(p);
+
+  const placed = act.map(p => {
     const r = RADII[p.tier] || RADII.warm;
     const a = (hashN(p.id) % 360) * Math.PI / 180;
-    const x = (cx + r * Math.cos(a)).toFixed(1);
-    const y = (cy + r * Math.sin(a)).toFixed(1);
+    return {
+      p,
+      d: dueInfo(p),
+      x: +(cx + r * Math.cos(a)).toFixed(1),
+      y: +(cy + r * Math.sin(a)).toFixed(1),
+    };
+  });
+
+  const links = placed
+    .filter(s => s.p.tier === 'inner')
+    .map(s => `<line class="link" x1="${cx}" y1="${cy}" x2="${s.x}" y2="${s.y}"/>`)
+    .join('');
+
+  const dots = placed.map(({ p, d, x, y }) => {
     const over = d && !d.snoozed && d.overdue >= 0;
-    return `<circle class="p-dot ${over ? 'overdue-dot' : ''}" data-act="openPerson" data-id="${p.id}"
-      cx="${x}" cy="${y}" r="${over ? 8.5 : 6.5}" fill="${p.type === 'dating' ? 'var(--dating)' : tierColor(p)}">
+    const color = p.type === 'dating' ? 'var(--dating)' : tierColor(p);
+    const act = interactive ? `data-act="openPerson" data-id="${p.id}"` : '';
+    return `<circle class="p-dot ${over ? 'overdue-dot' : ''}" ${act}
+      cx="${x}" cy="${y}" r="${over ? 8 : 6}" fill="${color}" color="${color}">
       <title>${esc(p.name)}${over ? ` — ${d.overdue}d overdue` : ''}</title></circle>`;
   }).join('');
+
   const first = (S.settings.profile.firstName || 'You')[0].toUpperCase();
   return `<svg class="constellation" viewBox="0 0 320 320" aria-label="Your circle">
+    <defs>
+      <radialGradient id="youGrad" cx="35%" cy="30%" r="80%">
+        <stop offset="0" stop-color="var(--aurora-3)"/>
+        <stop offset="0.55" stop-color="var(--aurora-1)"/>
+        <stop offset="1" stop-color="var(--aurora-2)"/>
+      </radialGradient>
+    </defs>
     ${rings}${specks}
+    <g class="links">${links}</g>
     <g class="orbits">${dots}</g>
-    <circle class="you-dot" cx="${cx}" cy="${cy}" r="15"/>
+    <circle class="you-dot" cx="${cx}" cy="${cy}" r="16"/>
     <text class="you-label" x="${cx}" y="${cy + 3.5}" text-anchor="middle">${esc(first)}</text>
   </svg>`;
 }
+
+// ============================================================
+//  THE CONCIERGE — "what should I do tonight / this weekend"
+// ============================================================
+
+const KIND_ICON = {
+  music: '♪', comedy: '☺', food: '◍', drinks: '❋', art: '◈', film: '▤',
+  outdoors: '⛰', active: '⚡', wellness: '❁', games: '◆', nightlife: '☾', home: '⌂',
+};
+
+const CITY_SUGGESTIONS = [
+  'New York', 'Los Angeles', 'San Francisco', 'Chicago', 'Austin', 'Seattle',
+  'Boston', 'Miami', 'Denver', 'London', 'Berlin', 'Paris', 'Toronto', 'Sydney',
+];
+
+function fmtTime(hhmm) {
+  if (!/^\d{1,2}:\d{2}$/.test(hhmm || '')) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${((h + 11) % 12) + 1}:${pad(m)} ${ampm}`;
+}
+
+// Live run being streamed right now. Kept out of S so a half-finished run
+// never gets persisted or synced.
+let cgRun = null;
+let cgAbort = null;
+
+function conciergeKey(mode, date, vibe) {
+  return [mode, S.settings.city || '?', date, (vibe || '').trim().toLowerCase()].join('|');
+}
+
+function conciergeDate(mode) {
+  if (mode === 'weekend') return weekendDates()[0];
+  const picked = S.concierge.pickedDate;
+  return picked && picked >= todayIso() ? picked : todayIso();
+}
+
+// The URL is the source of truth for which mode you're in, so back/forward and
+// shared links all behave.
+const conciergeMode = () => (route === 'weekend' ? 'weekend' : 'tonight');
+
+// ---------- weather (Open-Meteo, keyless) ----------
+async function geocodeCity(city) {
+  const cached = S.settings.profile.geo;
+  if (cached?.city === city) return cached;
+  const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name='
+    + encodeURIComponent(city));
+  const j = await r.json();
+  const hit = j.results?.[0];
+  if (!hit) throw new Error('city not found');
+  const geo = { city, lat: hit.latitude, lon: hit.longitude, label: hit.name };
+  S.settings.profile.geo = geo;
+  persist();
+  return geo;
+}
+
+const WEATHER_CODE = {
+  0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast',
+  45: 'foggy', 48: 'foggy', 51: 'drizzle', 53: 'drizzle', 55: 'drizzle',
+  61: 'light rain', 63: 'rain', 65: 'heavy rain', 71: 'snow', 73: 'snow',
+  75: 'heavy snow', 80: 'showers', 81: 'showers', 82: 'heavy showers',
+  95: 'thunderstorms', 96: 'thunderstorms', 99: 'thunderstorms',
+};
+
+async function fetchWeather(dates) {
+  const city = S.settings.city;
+  if (!city || !dates.length) return null;
+  try {
+    const geo = await geocodeCity(city);
+    const r = await fetch('https://api.open-meteo.com/v1/forecast'
+      + `?latitude=${geo.lat}&longitude=${geo.lon}`
+      + '&daily=weather_code,temperature_2m_max,temperature_2m_min'
+      + '&temperature_unit=fahrenheit&timezone=auto&forecast_days=10');
+    const j = await r.json();
+    const out = [];
+    for (const date of dates) {
+      const i = j.daily?.time?.indexOf(date);
+      if (i === undefined || i < 0) continue;
+      out.push({
+        date,
+        summary: WEATHER_CODE[j.daily.weather_code[i]] || 'mixed',
+        high: Math.round(j.daily.temperature_2m_max[i]),
+        low: Math.round(j.daily.temperature_2m_min[i]),
+      });
+    }
+    return out.length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+function weatherLine(weather) {
+  if (!weather?.length) return '';
+  return weather.map(w => `${fmtDate(w.date)}: ${w.summary}, ${w.high}°/${w.low}°F`).join('; ');
+}
+
+// ---------- who to bring ----------
+// The people most worth seeing right now: overdue, weighted by tier. This is
+// what turns generic city listings into something only Orbit could suggest.
+function companionsPayload(limit = 8) {
+  return activePeople()
+    .map(p => ({ p, d: dueInfo(p) }))
+    .filter(x => x.d && !x.d.snoozed)
+    .sort((a, b) => (b.d.overdue * tierWeight(b.p)) - (a.d.overdue * tierWeight(a.p)))
+    .slice(0, limit)
+    .map(({ p, d }) => ({
+      name: p.name.split(' ')[0],
+      relationship: p.type === 'dating' ? `dating · ${p.stage || 'new'}` : TIER_LABEL[p.tier].toLowerCase(),
+      overdueDays: Math.max(0, d.overdue),
+      interests: (p.interests || []).slice(0, 4),
+    }));
+}
+
+function personByFirstName(name) {
+  if (!name) return null;
+  const n = String(name).trim().toLowerCase();
+  return activePeople().find(p => p.name.split(' ')[0].toLowerCase() === n)
+    || activePeople().find(p => p.name.toLowerCase().startsWith(n)) || null;
+}
+
+// ---------- the run ----------
+async function runConcierge({ mode, vibe = '', budget = '', force = false } = {}) {
+  const city = S.settings.city;
+  if (!city) { toast('Add your city first ✦'); location.hash = '#welcome'; return; }
+
+  const dates = mode === 'weekend' ? weekendDates() : [conciergeDate(mode)];
+  const key = conciergeKey(mode, dates[0], vibe);
+
+  if (!force && S.concierge.runs[key]?.picks?.length) {
+    cgRun = null;
+    renderConciergeBody();
+    return;
+  }
+
+  cgAbort?.abort();
+  cgAbort = new AbortController();
+  cgRun = { mode, key, dates, vibe, budget, status: 'Reading the room…', picks: [], error: null, done: false };
+  renderConciergeBody();
+
+  const weather = await fetchWeather(dates);
+  if (weather) {
+    S.concierge.weather = { city, at: Date.now(), days: weather };
+    persist();
+  }
+  if (cgRun) renderConciergeBody();
+
+  const prof = S.settings.profile || {};
+  const body = {
+    mode,
+    city,
+    date: dates[0],
+    dates,
+    vibe,
+    budget,
+    weather: weatherLine(weather),
+    profile: {
+      firstName: prof.firstName || '',
+      interests: S.settings.interests || [],
+      neighborhoods: prof.neighborhoods || [],
+      dateStyles: prof.dateStyles || [],
+      datingMode: prof.datingMode || '',
+    },
+    companions: companionsPayload(),
+  };
+  if (S.settings.integrations?.provider) body.provider = S.settings.integrations.provider;
+
+  try {
+    const res = await fetch(proxyUrl() + '/concierge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: cgAbort.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      let msg = `The concierge is unreachable (${res.status}).`;
+      try {
+        const j = await res.json();
+        if (j.error) msg = j.error;
+      } catch { /* keep the status-code message */ }
+      throw new Error(msg);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (!cgRun) return;
+          if (ev.type === 'status') cgRun.status = ev.text;
+          else if (ev.type === 'pick') cgRun.picks.push(normalizePick(ev.pick, cgRun));
+          else if (ev.type === 'error') cgRun.error = ev.message;
+          else if (ev.type === 'done') cgRun.done = true;
+          renderConciergeBody();
+        }
+      }
+    }
+
+    if (!cgRun) return;
+    if (cgRun.picks.length) {
+      S.concierge.runs[key] = {
+        mode, city, dates, vibe,
+        at: Date.now(),
+        picks: cgRun.picks,
+      };
+      // Only the last handful of runs are worth keeping around.
+      const keys = Object.keys(S.concierge.runs);
+      if (keys.length > 8) {
+        keys
+          .sort((a, b) => (S.concierge.runs[a].at || 0) - (S.concierge.runs[b].at || 0))
+          .slice(0, keys.length - 8)
+          .forEach(k => delete S.concierge.runs[k]);
+      }
+      persist();
+      cgRun = null;
+      renderConciergeBody();
+      if (!reduceMotion) confetti(18);
+    } else {
+      cgRun.error = cgRun.error || 'Nothing came back. Try again, or loosen the vibe.';
+      cgRun.done = true;
+      renderConciergeBody();
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    if (!cgRun) return;
+    cgRun.error = String(err.message || err);
+    cgRun.done = true;
+    renderConciergeBody();
+  }
+}
+
+function normalizePick(raw, run) {
+  const dates = run?.dates || [todayIso()];
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw.date || '') && dates.includes(raw.date)
+    ? raw.date
+    : dates[0];
+  return {
+    id: uid(),
+    slot: String(raw.slot || (run?.mode === 'weekend' ? fmtDay(date) : 'Tonight')).slice(0, 40),
+    date,
+    title: String(raw.title || '').slice(0, 140),
+    venue: String(raw.venue || '').slice(0, 90),
+    neighborhood: String(raw.neighborhood || '').slice(0, 60),
+    startTime: /^\d{1,2}:\d{2}$/.test(raw.startTime || '') ? raw.startTime : null,
+    price: ['free', '$', '$$', '$$$'].includes(raw.price) ? raw.price : '',
+    kind: KIND_ICON[raw.kind] ? raw.kind : 'home',
+    why: String(raw.why || '').slice(0, 260),
+    tip: String(raw.tip || '').slice(0, 220),
+    url: /^https?:\/\//.test(raw.url || '') ? raw.url : null,
+    bring: raw.bring ? String(raw.bring).slice(0, 40) : null,
+    indoor: raw.indoor !== false,
+  };
+}
+
+// ---------- rendering ----------
+function pickCard(pick, i, { readOnly = false } = {}) {
+  const buddy = readOnly ? null : personByFirstName(pick.bring);
+  const meta = [
+    pick.venue,
+    pick.neighborhood,
+    pick.price === 'free' ? 'free' : pick.price,
+  ].filter(Boolean).map(esc).join(' · ');
+
+  const title = pick.url
+    ? `<a href="${esc(pick.url)}" target="_blank" rel="noopener">${esc(pick.title)} ↗</a>`
+    : esc(pick.title);
+
+  return `<article class="pick-card spot" style="--i:${i};animation-delay:${i * 70}ms">
+    <div class="pick-when">
+      <span class="slot">${esc(pick.slot)}</span>
+      ${pick.startTime ? `<span class="time">${esc(fmtTime(pick.startTime))}</span>` : ''}
+      ${!readOnly && pick.date !== todayIso() ? `<span class="time">${esc(fmtDate(pick.date))}</span>` : ''}
+    </div>
+    <div class="pick-kind" title="${esc(pick.kind)}">${KIND_ICON[pick.kind] || '◍'}</div>
+    <div class="pick-body">
+      <h3 class="pick-title">${title}</h3>
+      ${meta ? `<div class="pick-meta">${meta}${pick.indoor === false ? ' · outdoors' : ''}</div>` : ''}
+      ${pick.why ? `<p class="pick-why">${esc(pick.why)}</p>` : ''}
+      ${pick.tip ? `<div class="pick-tip">${esc(pick.tip)}</div>` : ''}
+      ${buddy ? `<div><span class="pick-bring">
+        <span class="avatar" style="${avatarStyle(buddy)}">${initials(buddy.name)}</span>
+        bring ${esc(buddy.name.split(' ')[0])}${dueInfo(buddy)?.overdue > 0 ? ` · ${dueInfo(buddy).overdue}d overdue` : ''}
+      </span></div>` : pick.bring && !readOnly ? `<div class="small faint">bring ${esc(pick.bring)}</div>` : ''}
+      ${readOnly ? '' : `<div class="pick-actions">
+        <button class="btn tiny accent" data-act="pickPlan" data-id="${pick.id}">Make it a plan</button>
+        <button class="btn tiny" data-act="pickSave" data-id="${pick.id}">Save</button>
+        <button class="btn tiny ghost" data-act="pickShare" data-id="${pick.id}">Share</button>
+      </div>`}
+    </div>
+  </article>`;
+}
+
+function currentPicks() {
+  if (cgRun) return cgRun.picks;
+  const mode = conciergeMode();
+  const run = S.concierge.runs[conciergeKey(mode, conciergeDate(mode), S.concierge.vibe || '')];
+  return run?.picks || [];
+}
+
+function findPick(id) {
+  return currentPicks().find(p => p.id === id) || null;
+}
+
+function weatherChip() {
+  const w = S.concierge.weather;
+  if (!w || w.city !== S.settings.city) return '';
+  const day = w.days.find(d => d.date === conciergeDate(conciergeMode())) || w.days[0];
+  if (!day) return '';
+  return `<span class="weather-chip">${esc(day.summary)} · ${day.high}°/${day.low}°F</span>`;
+}
+
+// Only the stream area re-renders while results arrive, so the vibe input keeps
+// focus and the caret doesn't jump mid-typing.
+function renderConciergeBody() {
+  const status = $('#cgStatus');
+  const stream = $('#cgStream');
+  if (!status || !stream) return;
+
+  const go = $('#cgGo');
+  if (go) {
+    const running = cgRun && !cgRun.done;
+    go.disabled = !!running;
+    go.innerHTML = running
+      ? '<span class="spin">◌</span> Searching…'
+      : `${currentPicks().length ? 'Find more' : 'Find something'} →`;
+  }
+
+  if (cgRun && !cgRun.done) {
+    status.innerHTML = `<span class="orb"></span><span>${esc(cgRun.status)}</span>
+      <button class="btn tiny ghost" data-act="cgStop">Stop</button>`;
+    status.hidden = false;
+  } else {
+    const picks = currentPicks();
+    const run = cgRun || S.concierge.runs[conciergeKey(conciergeMode(), conciergeDate(conciergeMode()), S.concierge.vibe || '')];
+    if (picks.length && run?.at) {
+      status.innerHTML = `<span>${picks.length} ${picks.length === 1 ? 'idea' : 'ideas'} · found ${new Date(run.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+        <button class="btn tiny ghost" data-act="cgRefresh">↻ Again</button>
+        <button class="btn tiny ghost" data-act="cgShareAll">Share all</button>`;
+      status.hidden = false;
+    } else {
+      status.hidden = true;
+    }
+  }
+
+  const picks = currentPicks();
+  const err = cgRun?.error;
+  const loading = cgRun && !cgRun.done;
+
+  stream.innerHTML = [
+    picks.map((p, i) => pickCard(p, i)).join(''),
+    loading ? `<div class="skeleton" style="animation-delay:${picks.length * 70}ms"></div>` : '',
+    err ? `<div class="empty">
+        <span class="big">◌</span>${esc(err)}
+        <div class="small faint" style="margin-top:10px">
+          The concierge runs through a proxy you control — check it in <a href="#connect">Connect</a>.
+        </div>
+      </div>` : '',
+    !picks.length && !loading && !err ? `<div class="empty">
+        <span class="big">✦</span>
+        Hit <b>Find something</b> and Orbit will go read the listings, cross-check the dates,
+        and come back with real places${activePeople().length ? ' — plus who to bring' : ''}.
+      </div>` : '',
+  ].join('');
+}
+
+VIEWS.tonight = function renderConcierge() {
+  const mode = conciergeMode();
+  const city = S.settings.city;
+  const prof = S.settings.profile || {};
+  const dates = mode === 'weekend' ? weekendDates() : [conciergeDate(mode)];
+
+  const heading = mode === 'weekend'
+    ? `What should I do <span class="aurora-text">this weekend</span>?`
+    : `What should I do <span class="aurora-text">${conciergeDate(mode) === todayIso() ? 'tonight' : fmtDay(conciergeDate(mode))}</span>?`;
+
+  const lede = city
+    ? mode === 'weekend'
+      ? `A real itinerary for ${esc(fmtDate(dates[0]))}–${esc(fmtDate(dates[dates.length - 1]))} in ${esc(city)}, built around your people and paced so the weekend feels designed.`
+      : `Live listings for ${esc(city)}, filtered through what you're into${prof.neighborhoods?.length ? `, near ${esc(prof.neighborhoods.slice(0, 2).join(' and '))}` : ''} — and matched to whoever you've been meaning to see.`
+    : `Add your city and Orbit can start finding real things to do.`;
+
+  $('#view').innerHTML = `
+    <section class="cg-hero rise">
+      <h1>${heading}</h1>
+      <p class="cg-lede">${lede}</p>
+
+      <div class="cg-modes">
+        <button class="cg-mode ${mode === 'tonight' ? 'on' : ''}" data-act="cgMode" data-id="tonight">
+          <span class="cg-ico">☾</span>
+          <span><b>Tonight</b><span>or any night this week</span></span>
+        </button>
+        <button class="cg-mode ${mode === 'weekend' ? 'on' : ''}" data-act="cgMode" data-id="weekend">
+          <span class="cg-ico">✦</span>
+          <span><b>The weekend</b><span>a full Friday-to-Sunday plan</span></span>
+        </button>
+      </div>
+
+      <div class="cg-controls">
+        ${mode === 'tonight' ? `
+          <label class="ob-label" style="align-self:center">Night</label>
+          <input type="date" id="cgDate" value="${esc(conciergeDate(mode))}" min="${todayIso()}" max="${addDays(todayIso(), 21)}">
+        ` : `<span class="faint small" style="align-self:center">${esc(dates.map(fmtDay).join(' · '))}</span>`}
+        <input id="cgVibe" placeholder="Anything specific? “low key and walkable”, “impress a date”…" value="${esc(S.concierge.vibe || '')}">
+        <button class="btn accent" id="cgGo" data-act="cgGo">${currentPicks().length ? 'Find more' : 'Find something'} →</button>
+        ${weatherChip()}
+      </div>
+
+      <div class="cg-status" id="cgStatus" hidden></div>
+    </section>
+
+    <div class="cg-stream" id="cgStream"></div>
+
+    ${city ? '' : `<div class="empty rise" style="margin-top:18px">
+      Orbit needs to know where you are. <a href="#" data-act="goWelcome"><b>Set your city →</b></a>
+    </div>`}
+  `;
+
+  renderConciergeBody();
+
+  $('#cgVibe')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); ACTIONS.cgGo(); }
+  });
+  $('#cgDate')?.addEventListener('change', e => {
+    S.concierge.pickedDate = e.target.value;
+    persist();
+    VIEWS.tonight();
+  });
+};
+
+VIEWS.weekend = VIEWS.tonight;
 
 // ---------- TODAY ----------
 function dueRow({ p, d }, i) {
@@ -620,7 +1222,33 @@ function planRow(pl, i = 0, withActions = true) {
   </div>`;
 }
 
+// The strip that makes the concierge the front door of the app.
+function conciergeStrip() {
+  const hour = new Date().getHours();
+  const dow = new Date().getDay();
+  const weekendish = dow === 5 || dow === 6 || dow === 4;
+  const lead = weekendish
+    ? { mode: 'weekend', label: 'Plan my weekend', sub: 'Friday to Sunday, actually designed' }
+    : { mode: 'tonight', label: hour >= 16 ? 'What should I do tonight?' : 'What should I do this evening?', sub: `Live in ${esc(S.settings.city || 'your city')}, matched to you` };
+  const other = lead.mode === 'weekend'
+    ? { mode: 'tonight', label: 'Just tonight', sub: 'one evening, four options' }
+    : { mode: 'weekend', label: 'The whole weekend', sub: 'Friday to Sunday' };
+
+  return `<div class="cg-modes" style="margin-top:24px">
+    <button class="cg-mode rise" style="--i:1" data-act="cgJump" data-id="${lead.mode}">
+      <span class="cg-ico">${lead.mode === 'weekend' ? '✦' : '☾'}</span>
+      <span><b>${lead.label}</b><span>${lead.sub}</span></span>
+    </button>
+    <button class="cg-mode rise" style="--i:2" data-act="cgJump" data-id="${other.mode}">
+      <span class="cg-ico">${other.mode === 'weekend' ? '✦' : '☾'}</span>
+      <span><b>${other.label}</b><span>${other.sub}</span></span>
+    </button>
+  </div>`;
+}
+
 VIEWS.today = function renderToday() {
+  if (!S.settings.profile.completed) return renderLanding();
+
   const due = duePeople();
   const today = todayIso();
   const upcoming = (S.plans || [])
@@ -669,14 +1297,15 @@ VIEWS.today = function renderToday() {
             <div class="date">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</div>
           </div>
           <div class="card build-cta rise" style="--i:1">
-            <div style="font-family:var(--serif);font-size:21px;font-weight:600;letter-spacing:-0.3px">Your orbit is empty — let's fix that.</div>
-            <p class="muted" style="margin:8px 0 16px">Five minutes: your inner circle, close friends, anyone you're dating, and what you want out of it. Then the whole system — daily three, drafts, digest, plan suggestions — runs on your real life.</p>
+            <div style="font-family:var(--display);font-size:21px;font-weight:600;letter-spacing:-0.6px">Your sky is empty — let's fix that.</div>
+            <p class="muted" style="margin:8px 0 16px">Five minutes: your inner circle, close friends, anyone you're dating. Then the whole system — today's three, drafts, weekend plans — runs on your real life.</p>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn accent big" data-act="goBuild">Build your orbit →</button>
+              <button class="btn accent big" data-act="goBuild">Add my people →</button>
               ${LOCAL ? `<a class="btn" href="#connect">Import Apple Contacts</a>` : ''}
               <a class="btn ghost" href="#triage">Paste a list</a>
             </div>
           </div>
+          ${conciergeStrip()}
         </div>
         <div class="rise" style="--i:2">${constellationSvg()}</div>
       </div>
@@ -738,9 +1367,10 @@ VIEWS.today = function renderToday() {
           <div class="date">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${act.length} people in your orbit</div>
           <div class="hero-chips rise" style="--i:1">
             <span class="hero-chip"><b>${score}</b> orbit score ${sparklineSvg()}</span>
-            ${streak > 0 ? `<span class="hero-chip">🔥 <b>${streak}</b>-day streak</span>` : ''}
-            <button class="hero-chip as-btn" data-act="goReview">🧭 weekly review</button>
+            ${streak > 0 ? `<span class="hero-chip">✦ <b>${streak}</b>-day streak</span>` : ''}
+            <button class="hero-chip as-btn" data-act="goReview">◈ weekly review</button>
           </div>
+          ${conciergeStrip()}
         </div>
         <div class="stats">
           ${stats.map(([n, l], i) => `<div class="stat spot rise" style="--i:${i + 1}"><div class="n" data-count="${n}">${n}</div><div class="l">${l}</div></div>`).join('')}
@@ -758,7 +1388,7 @@ VIEWS.today = function renderToday() {
 
     ${showReviewBanner ? `
     <div class="review-banner rise" data-act="goReview">
-      <span>🧭 <b>${dow === 0 ? "It's Sunday" : 'New week'}</b> — two minutes to review your week and line up the next one.</span>
+      <span>◈ <b>${dow === 0 ? "It's Sunday" : 'New week'}</b> — two minutes to review your week and line up the next one.</span>
       <span class="btn tiny primary">Start review →</span>
     </div>` : ''}
 
@@ -794,14 +1424,14 @@ VIEWS.today = function renderToday() {
     <h2>Reach out <span class="sub">${due.length ? `${due.length} due · tap a channel to open a draft` : ''}</span></h2>
     ${due.length
       ? `<div class="due-list">${due.map(dueRow).join('')}</div>`
-      : `<div class="empty rise"><span class="big">☀️</span>All caught up — nobody is overdue.</div>`}
+      : `<div class="empty rise"><span class="big">◍</span>All caught up — nobody is overdue.</div>`}
 
     <h2>Coming up <span class="sub">next 14 days</span></h2>
     ${upcoming.length
       ? `<div class="plan-list">${upcoming.map((pl, i) => planRow(pl, i)).join('')}</div>`
       : `<div class="empty rise">Nothing planned. Pick someone above and hit <b>Plan</b>, or browse <a href="#ideas">Ideas</a>.</div>`}
 
-    <h2>Happening in New York <span class="sub">curated for your interests</span></h2>
+    <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">curated for your interests</span></h2>
     ${events.length
       ? `<div class="event-list">${events.map((e, i) => `
           <div class="event-row rise" style="--i:${i}">
@@ -834,6 +1464,107 @@ function animateStats(onTrack) {
     requestAnimationFrame(tick);
   });
 }
+
+// ============================================================
+//  SHARING — an itinerary packed into the URL, no server involved
+// ============================================================
+
+const b64urlEncode = bytes => btoa(String.fromCharCode(...bytes))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64urlDecode = s => Uint8Array.from(
+  atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+async function encodeShare(payload) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  if (typeof CompressionStream === 'function') {
+    const cs = new CompressionStream('deflate-raw');
+    const writer = cs.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    const packed = new Uint8Array(await new Response(cs.readable).arrayBuffer());
+    return 'z' + b64urlEncode(packed);
+  }
+  return 'r' + b64urlEncode(bytes);
+}
+
+async function decodeShare(token) {
+  const flag = token[0];
+  const bytes = b64urlDecode(token.slice(1));
+  if (flag === 'z') {
+    const ds = new DecompressionStream('deflate-raw');
+    const writer = ds.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    const raw = await new Response(ds.readable).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(raw));
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+// Strip the fields a stranger has no business seeing — this is a plan, not a
+// window into someone's address book.
+function sharePick(pick) {
+  return {
+    slot: pick.slot, date: pick.date, title: pick.title, venue: pick.venue,
+    neighborhood: pick.neighborhood, startTime: pick.startTime, price: pick.price,
+    kind: pick.kind, why: pick.why, tip: pick.tip, url: pick.url, indoor: pick.indoor,
+  };
+}
+
+async function shareItinerary(picks, label) {
+  if (!picks.length) { toast('Nothing to share yet'); return; }
+  const payload = {
+    v: 1,
+    from: S.settings.profile.firstName || '',
+    city: S.settings.city || '',
+    label: label || (picks.length > 1 ? 'A weekend in the making' : picks[0].title),
+    picks: picks.map(sharePick),
+  };
+  const token = await encodeShare(payload);
+  const url = `${WEB_URL}#s=${token}`;
+
+  if (url.length > 7500) { toast('That itinerary is too big to share as a link'); return; }
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Orbit', text: payload.label, url });
+      return;
+    } catch { /* user dismissed the sheet — fall back to the clipboard */ }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Link copied — anyone can open it ✦');
+  } catch {
+    prompt('Copy this link:', url);
+  }
+}
+
+VIEWS.shared = function renderShared() {
+  const p = sharedPayload;
+  if (!p) { location.hash = '#today'; return; }
+  const who = p.from ? `${esc(p.from)} sent you this` : 'Someone sent you this';
+
+  $('#view').innerHTML = `
+    <div class="share-view">
+      <div class="share-brand rise">
+        <svg width="18" height="18" viewBox="0 0 100 100"><circle cx="50" cy="50" r="36" fill="none" stroke="var(--accent)" stroke-width="10"/><circle cx="50" cy="11" r="11" fill="var(--aurora-3)"/></svg>
+        Orbit
+      </div>
+      <div class="share-head rise" style="--i:1">
+        <h1>${esc(p.label || 'A plan')}</h1>
+        <div class="share-from">${who}${p.city ? ` · ${esc(p.city)}` : ''}</div>
+      </div>
+      <div class="cg-stream">
+        ${p.picks.map((pick, i) => pickCard(normalizePick(pick, { dates: [pick.date || todayIso()] }), i, { readOnly: true })).join('')}
+      </div>
+      <div class="share-cta rise" style="--i:2">
+        <h2>Want your own?</h2>
+        <p>Orbit keeps your closest people close, then tells you exactly what to do with them — tonight, or this weekend.</p>
+        <button class="btn accent big" data-act="sharedStart">Start my orbit ✦</button>
+      </div>
+    </div>
+  `;
+};
 
 // ---------- PEOPLE ----------
 function dueBadge(p) {
@@ -1146,7 +1877,7 @@ function buildDigestMarkdown() {
     lines.push('', '## Dating next steps');
     for (const n of nudges) lines.push(`- **${n.name}** (${n.stage}): ${n.nextStep}`);
   }
-  lines.push('', '## Happening in New York');
+  lines.push('', `## Happening in ${S.settings.city || 'your city'}`);
   const events = (S.events || []).filter(e => !e.date || e.date >= today).slice(0, 12);
   if (!events.length) lines.push('No events loaded yet — the daily agent fills these in.');
   for (const e of events) lines.push(`- ${e.date ? e.date + ' — ' : ''}**${e.title}**${e.venue ? ` @ ${e.venue}` : ''}${e.url ? ` (${e.url})` : ''}`);
@@ -1205,7 +1936,7 @@ VIEWS.connect = async function renderConnect() {
   const slackHook = S.settings.integrations.slackWebhook || '';
   const synced = !!syncCfg?.gistId;
 
-  const syncCard = connectCard('🔄', 'Sync across devices', 'Mac ⇄ phone ⇄ web, end-to-end encrypted', synced,
+  const syncCard = connectCard('⟳', 'Sync across devices', 'Mac ⇄ phone ⇄ web, end-to-end encrypted', synced,
     synced
       ? `Your data syncs through a private GitHub gist, encrypted on-device with your passphrase — GitHub only ever sees ciphertext.${lastSyncAt ? ` Last synced ${new Date(lastSyncAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}`
       : `Use Orbit on your phone and Mac with the same data. Encrypted with a passphrase <b>before</b> it leaves the device — GitHub only stores ciphertext.
@@ -1216,64 +1947,79 @@ VIEWS.connect = async function renderConnect() {
       ? `<button class="btn" data-act="syncNow">Sync now</button><button class="btn ghost danger" data-act="syncOff">Disconnect</button>`
       : `<button class="btn primary" data-act="syncCreate">Create sync</button><button class="btn ghost" data-act="syncConnect">I already have one</button>`, 2);
 
-  const slackCard = connectCard('💬', 'Slack', 'Digest in your DMs', !!slackHook,
+  const slackCard = connectCard('◗', 'Slack', 'Digest in your DMs', !!slackHook,
     `Paste an <a href="https://api.slack.com/messaging/webhooks" target="_blank" rel="noopener">incoming webhook URL ↗</a> and the 8am agent posts your digest to Slack too.
      <input id="slack-hook" type="password" placeholder="https://hooks.slack.com/services/…" value="${esc(slackHook)}">`,
     `<button class="btn ${slackHook ? 'ghost' : 'primary'}" data-act="saveSlack">${slackHook ? 'Update' : 'Save'}</button>
      ${slackHook ? '<button class="btn ghost danger" data-act="clearSlack">Remove</button>' : ''}`, 3);
 
-  const gcalCard = connectCard('📅', 'Google Calendar', 'Plans → your calendar', null,
+  const gcalCard = connectCard('◫', 'Google Calendar', 'Plans → your calendar', null,
     `Every plan has a <b>GCal ↗</b> button — one click adds it with people, time, and place prefilled. No account linking needed.${LOCAL ? `<br><span class="faint">On this Mac you can also subscribe to the live feed:</span>` : ''}`,
     LOCAL
       ? `<a class="btn" href="webcal://localhost:${c.port}/api/calendar.ics">Subscribe in Apple Calendar</a><a class="btn ghost" href="#plans">See plans</a>`
       : `<a class="btn" href="#plans">See plans</a>`, 4);
 
-  const channelsCard = connectCard('💌', 'Messages · WhatsApp · IG · X', 'One-tap outreach', null,
+  const channelsCard = connectCard('✉', 'Messages · WhatsApp · IG · X', 'One-tap outreach', null,
     `Add a phone number or handle to anyone and channel buttons appear on their cards. Tap one → a ready-to-send draft is copied and the right app opens: <b>iM</b> Messages, <b>WA</b> WhatsApp, <b>IG</b> Instagram DM, <b>𝕏</b> X.`,
     `<a class="btn" href="#people">Add handles to people</a>`, 5);
+
+  const customProxy = S.settings.integrations.proxyUrl || '';
+  const conciergeCard = connectCard('✦', 'The concierge', 'Live plans for tonight & the weekend', null,
+    `<b>Tonight</b> and <b>Weekend</b> search the live web for real shows, openings, and tables in
+     ${esc(S.settings.city || 'your city')} — then match them to your interests and to whoever you've
+     been meaning to see. Requests go through a small proxy that holds the model key, so nothing
+     sensitive touches this device.
+     <div style="margin-top:10px" class="faint small">Proxy: <code>${esc(customProxy || DEFAULT_PROXY_URL)}</code></div>
+     <input id="cg-proxy" placeholder="Your own worker URL (optional)" value="${esc(customProxy)}">`,
+    `<a class="btn accent" href="#tonight">Try it →</a>
+     <button class="btn" data-act="cgTestProxy">Test connection</button>
+     <button class="btn ghost" data-act="cgSaveProxy">${customProxy ? 'Update' : 'Use my own'}</button>
+     ${customProxy ? '<button class="btn ghost danger" data-act="cgClearProxy">Reset</button>' : ''}`, 1);
 
   let cards;
   if (LOCAL) {
     cards = [
+      conciergeCard,
       syncCard,
-      connectCard('👥', 'Apple Contacts', 'Import your people in one click', null,
+      connectCard('◉', 'Apple Contacts', 'Import your people in one click', null,
         `Pulls every name from your macOS Contacts straight into Triage so you can sort your real circle. macOS will ask for permission once.`,
         `<button class="btn primary" data-act="importContacts">Import contacts</button>
          <a class="btn ghost" href="#triage">Or paste a list</a>`, 3),
-      connectCard('🤖', 'Daily digest agent', 'Runs every morning at 8:00', c.digestTask,
-        `Searches NYC events matching your profile, loads them into Orbit, and delivers your digest. <span class="faint">To change the time, just ask Claude.</span>`,
+      connectCard('◈', 'Daily digest agent', 'Runs every morning at 8:00', c.digestTask,
+        `Searches ${esc(S.settings.city || 'your city')} events matching your profile, loads them into Orbit, and delivers your digest. <span class="faint">To change the time, just ask Claude.</span>`,
         `<a class="btn ghost" href="#digest">Preview today's digest</a>`, 4),
-      connectCard('✉️', 'Email delivery', 'Digest → your inbox', gmail,
+      connectCard('▤', 'Email delivery', 'Digest → your inbox', gmail,
         `The agent delivers as a notification until Gmail is connected in Claude:
          <ol><li>Claude desktop → <b>Settings → Connectors</b></li><li>Add <b>Gmail</b> and sign in</li><li>Done — the 8am agent finds it automatically</li></ol>`,
         `<button class="btn ${gmail ? 'ghost' : 'primary'}" data-act="toggleGmail">${gmail ? 'Mark as not connected' : "I've connected Gmail ✓"}</button>`, 5),
       slackCard.replace('--i:3', '--i:6'),
       gcalCard.replace('--i:4', '--i:7'),
       channelsCard.replace('--i:5', '--i:8'),
-      connectCard('🌐', 'Orbit on the web', 'Use it anywhere', null,
+      connectCard('◍', 'Orbit on the web', 'Use it anywhere', null,
         `Your app is live at <code>${WEB_URL}</code> — open it on your phone, add it to your home screen, and turn on Sync (above) to share data with this Mac.`,
         `<a class="btn primary" href="${WEB_URL}" target="_blank" rel="noopener">Open web app ↗</a>`, 9),
       connectCard('⚡', 'Always-on', 'Orbit runs itself', c.launchAgent,
         `Starts Orbit at login and keeps it running in the background, so the morning agent and calendar feed always work — no terminal needed.`,
         `<button class="btn ${c.launchAgent ? 'ghost' : 'primary'}" data-act="alwaysOn" data-id="${c.launchAgent ? 'off' : 'on'}">${c.launchAgent ? 'Disable' : 'Enable'}</button>`, 10),
-      connectCard('🗂️', 'Your data', 'One JSON file, yours', null,
+      connectCard('⌂', 'Your data', 'One JSON file, yours', null,
         `Everything lives in <code>~/orbit/data.json</code> with automatic daily backups. Export any time.`,
         `<button class="btn ghost" data-act="exportJson">Export JSON</button>
          ${S.people.some(p => p.sample) ? `<button class="btn ghost danger" data-act="removeSamples">Remove samples</button>` : ''}`, 11),
     ];
   } else {
     cards = [
+      conciergeCard,
       syncCard,
-      connectCard('📱', 'Install as an app', 'Home-screen Orbit', null,
+      connectCard('▢', 'Install as an app', 'Home-screen Orbit', null,
         `On iPhone: open this page in Safari → <b>Share</b> → <b>Add to Home Screen</b>. Full-screen, offline-capable, feels native.`,
         `<span class="faint small">Already installed? You're looking at it.</span>`, 3),
       slackCard.replace('--i:3', '--i:4'),
       gcalCard.replace('--i:4', '--i:5'),
       channelsCard.replace('--i:5', '--i:6'),
-      connectCard('🤖', 'Daily digest agent', 'Runs on your Mac at 8:00', null,
-        `The agent lives on your Mac: it finds NYC events for your profile and delivers your digest by email/Slack. With Sync on, events and updates flow here automatically.`,
+      connectCard('◈', 'Daily digest agent', 'Runs on your Mac at 8:00', null,
+        `The agent lives on your Mac: it finds events in ${esc(S.settings.city || 'your city')} for your profile and delivers your digest by email/Slack. With Sync on, events and updates flow here automatically.`,
         `<a class="btn ghost" href="#digest">Preview the digest</a>`, 7),
-      connectCard('🗂️', 'Your data', 'Stored on this device', null,
+      connectCard('⌂', 'Your data', 'Stored on this device', null,
         `Data lives in this browser (and in your encrypted sync, if enabled). Export a backup any time.`,
         `<button class="btn ghost" data-act="exportJson">Export JSON</button>
          ${S.people.some(p => p.sample) ? `<button class="btn ghost danger" data-act="removeSamples">Remove samples</button>` : ''}`, 8),
@@ -1588,12 +2334,18 @@ function openPersonDialog(id, presets = {}) {
 }
 
 // ---------- PLAN DIALOG ----------
-function openPlanDialog({ planId, personId, ideaId, date } = {}) {
+function openPlanDialog({ planId, personId, ideaId, date, title, place, time, notes } = {}) {
   const existing = planId ? S.plans.find(x => x.id === planId) : null;
   const idea = ideaId ? S.ideas.find(i => i.id === ideaId) : null;
   const pl = existing || {
-    id: uid(), title: idea ? idea.title : '', personIds: personId ? [personId] : [],
-    date: date || addDays(todayIso(), 2), time: '19:00', place: idea ? (idea.hood || '') : '', notes: '', status: 'upcoming',
+    id: uid(),
+    title: title || (idea ? idea.title : ''),
+    personIds: personId ? [personId] : [],
+    date: date || addDays(todayIso(), 2),
+    time: time || '19:00',
+    place: place || (idea ? (idea.hood || '') : ''),
+    notes: notes || '',
+    status: 'upcoming',
   };
   const candidates = activePeople().sort((a, b) => a.name.localeCompare(b.name));
   const dlg = $('#planDialog');
@@ -1679,16 +2431,26 @@ function openIdeaDialog(id) {
   });
 }
 
-// ---------- ONBOARDING WIZARD ----------
-let wiz = null;
+// ============================================================
+//  ONBOARDING — one question per screen, full bleed
+// ============================================================
 
-function openWizard(startStep = 0) {
+let ob = null;
+
+// Also the settings surface: the ✦ button reopens this pre-filled, so there's
+// only ever one place profile lives.
+function openWizard() {
+  location.hash = '#welcome';
+}
+
+function obInit() {
   const st = S.settings, prof = st.profile || {};
-  wiz = {
-    step: startStep, dir: 1,
+  ob = {
+    step: 0, dir: 1, editing: !!prof.completed,
     data: {
       firstName: prof.firstName || '',
       email: st.email || '',
+      city: st.city || '',
       neighborhoods: (prof.neighborhoods || []).join(', '),
       interests: [...(st.interests || [])],
       socialBudget: prof.socialBudget || 3,
@@ -1702,196 +2464,261 @@ function openWizard(startStep = 0) {
       customGoals: [...(st.goals?.custom || [])],
     },
   };
-  renderWizard();
-  $('#wizardDialog').showModal();
 }
 
-const WIZ_STEPS = [
+const OB_STEPS = [
   {
-    title: 'Let’s set you up',
-    sub: 'Orbit works better the more it knows about you. Two minutes, five steps.',
+    eyebrow: 'Welcome to Orbit',
+    title: d => d.firstName ? `Good to see you, ${esc(d.firstName)}.` : 'First — what should we call you?',
+    sub: 'Orbit is built on one idea: fewer people, deeper bonds. It keeps your closest people close, then tells you exactly what to do with them.',
     body: d => `
-      <div class="form-grid">
-        <label class="field">First name<input id="wz-name" value="${esc(d.firstName)}" placeholder="Jesse"></label>
-        <label class="field">Digest email<input id="wz-email" value="${esc(d.email)}" placeholder="you@email.com"></label>
-        <label class="field full">Your neighborhoods <span style="font-weight:400;text-transform:none">(where you actually hang — biases suggestions)</span>
-          <input id="wz-hoods" value="${esc(d.neighborhoods)}" placeholder="Williamsburg, East Village, Fort Greene"></label>
-      </div>`,
-    collect: d => {
-      d.firstName = $('#wz-name').value.trim();
-      d.email = $('#wz-email').value.trim();
-      d.neighborhoods = $('#wz-hoods').value;
-    },
+      <input id="ob-name" value="${esc(d.firstName)}" placeholder="Your first name" autocomplete="given-name" autofocus>`,
+    collect: d => { d.firstName = $('#ob-name').value.trim(); },
+    valid: d => !!d.firstName || 'A name makes everything else feel less like a database.',
   },
   {
-    title: 'What are you into?',
-    sub: 'The daily agent hunts NYC events for these, and ideas get matched to people who share them.',
+    eyebrow: 'Step 2',
+    title: () => 'Where are you these days?',
+    sub: 'This is the big one. Your city is how Orbit finds real shows, real openings, real tables — not generic advice.',
+    body: d => `
+      <input id="ob-city" value="${esc(d.city)}" placeholder="City" autocomplete="address-level2" autofocus>
+      <div class="city-suggest">
+        ${CITY_SUGGESTIONS.map(c => `<button data-ob-city="${esc(c)}">${esc(c)}</button>`).join('')}
+      </div>
+      <div style="margin-top:18px">
+        <div class="ob-label">Neighborhoods you actually hang in <span style="text-transform:none;letter-spacing:0">— optional</span></div>
+        <input id="ob-hoods" value="${esc(d.neighborhoods)}" placeholder="Williamsburg, East Village…" style="margin-top:8px">
+      </div>`,
+    collect: d => {
+      d.city = $('#ob-city').value.trim();
+      d.neighborhoods = $('#ob-hoods').value;
+    },
+    valid: d => !!d.city || 'Orbit needs a city before it can find anything.',
+  },
+  {
+    eyebrow: 'Step 3',
+    title: () => 'What are you into?',
+    sub: 'Pick as many as ring true. Every suggestion — tonight, this weekend, for any person — gets filtered through these.',
     body: d => `
       <div class="chip-select">
         ${[...new Set([...INTEREST_BANK, ...d.interests])].map(t =>
           `<button class="pick ${d.interests.includes(t) ? 'on' : ''}" data-pick="interests" data-val="${esc(t)}">${esc(t)}</button>`).join('')}
       </div>
       <div class="wiz-row">
-        <input id="wz-custom" class="grow" placeholder="Add your own…">
-        <button class="btn" id="wz-custom-add">Add</button>
+        <input id="ob-custom" class="grow" placeholder="Something else…">
+        <button class="btn" id="ob-custom-add">Add</button>
       </div>`,
     collect: () => {},
+    valid: d => d.interests.length >= 2 || 'Pick at least two so there\'s something to work with.',
   },
   {
-    title: 'Your social rhythm',
-    sub: 'How much time do you actually want to spend? Orbit paces everything to this.',
+    eyebrow: 'Step 4',
+    title: () => 'What\'s your rhythm?',
+    sub: 'Orbit paces everything to this. It will never nag you past the life you actually want.',
     body: d => `
-      <label class="field">Hangs / dates per week</label>
+      <div class="ob-label">Hangs and dates per week</div>
       <div class="wiz-row">
-        <input type="range" id="wz-budget" class="grow" min="1" max="7" value="${d.socialBudget}"
-          oninput="document.getElementById('wz-budget-val').textContent=this.value">
-        <div class="slider-val" id="wz-budget-val">${d.socialBudget}</div>
+        <input type="range" id="ob-budget" class="grow" min="1" max="7" value="${d.socialBudget}">
+        <div class="slider-val" id="ob-budget-val">${d.socialBudget}</div>
       </div>
-      <label class="field" style="margin-top:8px">Nights you like going out</label>
-      <div class="chip-select" style="margin-top:6px">
+      <div class="ob-label" style="margin-top:10px">Nights you like going out</div>
+      <div class="chip-select" style="margin-top:8px">
         ${NIGHTS.map(n => `<button class="pick ${d.nights.includes(n) ? 'on' : ''}" data-pick="nights" data-val="${n}">${n}</button>`).join('')}
       </div>
-      <label class="field" style="margin-top:16px">Follow-up cadence (days between touches)</label>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:6px">
-        <label class="field">Inner<input type="number" id="wz-inner" value="${d.inner}" min="1"></label>
-        <label class="field">Close<input type="number" id="wz-close" value="${d.close}" min="1"></label>
-        <label class="field">Warm<input type="number" id="wz-warm" value="${d.warm}" min="1"></label>
-        <label class="field">Dating<input type="number" id="wz-dating" value="${d.datingCadence}" min="1"></label>
+      <div class="ob-label" style="margin-top:22px">How many days before someone counts as overdue?</div>
+      <div class="field-row" style="margin-top:8px">
+        <label class="field">Inner circle<input type="number" id="ob-inner" value="${d.inner}" min="1" max="365"></label>
+        <label class="field">Close<input type="number" id="ob-close" value="${d.close}" min="1" max="365"></label>
+        <label class="field">Keep warm<input type="number" id="ob-warm" value="${d.warm}" min="1" max="365"></label>
+        <label class="field">Dating<input type="number" id="ob-dating" value="${d.datingCadence}" min="1" max="365"></label>
       </div>`,
     collect: d => {
-      d.socialBudget = +$('#wz-budget').value;
-      d.inner = +$('#wz-inner').value || 7;
-      d.close = +$('#wz-close').value || 21;
-      d.warm = +$('#wz-warm').value || 60;
-      d.datingCadence = +$('#wz-dating').value || 5;
+      d.socialBudget = +$('#ob-budget').value;
+      d.inner = +$('#ob-inner').value || 7;
+      d.close = +$('#ob-close').value || 21;
+      d.warm = +$('#ob-warm').value || 60;
+      d.datingCadence = +$('#ob-dating').value || 5;
+    },
+    after: () => {
+      $('#ob-budget')?.addEventListener('input', e => { $('#ob-budget-val').textContent = e.target.value; });
     },
   },
   {
-    title: 'Dating mode',
-    sub: 'So the pipeline pushes exactly as hard as you want it to.',
+    eyebrow: 'Step 5',
+    title: () => 'How\'s dating going?',
+    sub: 'So the pipeline pushes exactly as hard as you want it to — and no harder.',
     body: d => `
       <div class="radio-cards">
-        ${[['actively', '🔥', 'Actively looking', 'prioritize dates, fast follow-ups'],
-           ['casually', '🌗', 'Casually dating', 'open, not chasing'],
-           ['paused', '😌', 'Paused', 'focus on friends for now']].map(([v, e, b, s]) =>
+        ${[['actively', '✦', 'Actively looking', 'dates get priority'],
+           ['casually', '◐', 'Casually dating', 'open, not chasing'],
+           ['paused', '◯', 'Paused', 'friends only for now']].map(([v, e, b, s]) =>
           `<div class="rc ${d.datingMode === v ? 'on' : ''}" data-pick-one="datingMode" data-val="${v}"><span class="e">${e}</span><b>${b}</b>${s}</div>`).join('')}
       </div>
-      <label class="field" style="margin-top:16px">Date styles you actually enjoy</label>
-      <div class="chip-select" style="margin-top:6px">
+      <div class="ob-label" style="margin-top:22px">Date styles you actually enjoy</div>
+      <div class="chip-select" style="margin-top:8px">
         ${DATE_STYLES.map(t => `<button class="pick ${d.dateStyles.includes(t) ? 'on' : ''}" data-pick="dateStyles" data-val="${esc(t)}">${esc(t)}</button>`).join('')}
       </div>`,
     collect: () => {},
   },
   {
-    title: 'What does “winning” look like?',
-    sub: 'Goals turn the app from a list into a scoreboard. Orbit tracks these for you.',
+    eyebrow: 'Last one',
+    title: () => 'What does winning look like?',
+    sub: 'Goals turn this from a list into a scoreboard. Your weekly review measures against them.',
     body: d => `
-      <label class="field">Inner circle size — how many people get weekly-ish energy?</label>
+      <div class="ob-label">People who get weekly-ish energy</div>
       <div class="wiz-row">
-        <input type="range" id="wz-innertarget" class="grow" min="2" max="10" value="${d.innerTarget}"
-          oninput="document.getElementById('wz-innertarget-val').textContent=this.value">
-        <div class="slider-val" id="wz-innertarget-val">${d.innerTarget}</div>
+        <input type="range" id="ob-innertarget" class="grow" min="2" max="10" value="${d.innerTarget}">
+        <div class="slider-val" id="ob-innertarget-val">${d.innerTarget}</div>
       </div>
-      <label class="field" style="margin-top:10px">Dates per month <span style="font-weight:400;text-transform:none">(0 = don't track)</span></label>
+      <div class="ob-label" style="margin-top:8px">Dates per month <span style="text-transform:none;letter-spacing:0">— 0 to not track</span></div>
       <div class="wiz-row">
-        <input type="range" id="wz-datesgoal" class="grow" min="0" max="10" value="${d.datesPerMonth}"
-          oninput="document.getElementById('wz-datesgoal-val').textContent=this.value">
-        <div class="slider-val" id="wz-datesgoal-val">${d.datesPerMonth}</div>
+        <input type="range" id="ob-datesgoal" class="grow" min="0" max="10" value="${d.datesPerMonth}">
+        <div class="slider-val" id="ob-datesgoal-val">${d.datesPerMonth}</div>
       </div>
-      <label class="field" style="margin-top:14px">Your own goals <span style="font-weight:400;text-transform:none">(shown in your weekly review)</span></label>
-      <div class="thread-list" style="margin-top:6px">
-        ${d.customGoals.map((g, i) => `<div class="thread-item">🎯 <span style="flex:1">${esc(g.text)}</span><button class="btn tiny ghost" data-goal-rm="${i}">✕</button></div>`).join('') || '<div class="small faint">e.g. “Host a dinner every month” · “One new friend per quarter”</div>'}
+      <div class="ob-label" style="margin-top:14px">Anything of your own</div>
+      <div class="thread-list" style="margin-top:8px">
+        ${d.customGoals.map((g, i) => `<div class="thread-item">◎ <span style="flex:1">${esc(g.text)}</span><button class="btn tiny ghost" data-goal-rm="${i}">✕</button></div>`).join('')
+          || '<div class="small faint">e.g. “Host a dinner every month” · “One new friend a quarter”</div>'}
       </div>
       <div class="wiz-row">
-        <input id="wz-goal-custom" class="grow" placeholder="Add a goal…">
-        <button class="btn" id="wz-goal-add">Add</button>
+        <input id="ob-goal-custom" class="grow" placeholder="Add a goal…">
+        <button class="btn" id="ob-goal-add">Add</button>
+      </div>
+      <div style="margin-top:14px">
+        <div class="ob-label">Digest email <span style="text-transform:none;letter-spacing:0">— optional</span></div>
+        <input id="ob-email" value="${esc(d.email)}" placeholder="you@email.com" style="margin-top:8px" autocomplete="email">
       </div>`,
     collect: d => {
-      d.innerTarget = +$('#wz-innertarget').value || 5;
-      d.datesPerMonth = +$('#wz-datesgoal').value;
+      d.innerTarget = +$('#ob-innertarget').value || 5;
+      d.datesPerMonth = +$('#ob-datesgoal').value;
+      d.email = $('#ob-email').value.trim();
     },
-  },
-  {
-    title: 'Wire it up',
-    sub: 'The finishing touches that make Orbit run itself — all one click, all in the Connect tab.',
-    body: () => `
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div class="card" style="display:flex;gap:12px;align-items:center"><span style="font-size:20px">🔄</span><div style="flex:1"><b>Sync across devices</b><div class="small muted">encrypted — phone ⇄ Mac ⇄ web</div></div></div>
-        <div class="card" style="display:flex;gap:12px;align-items:center"><span style="font-size:20px">💌</span><div style="flex:1"><b>Add handles to your people</b><div class="small muted">one-tap drafts into Messages, WhatsApp, IG, X</div></div></div>
-        <div class="card" style="display:flex;gap:12px;align-items:center"><span style="font-size:20px">📅</span><div style="flex:1"><b>GCal buttons on every plan</b><div class="small muted">one click to your Google Calendar</div></div></div>
-        <div class="card" style="display:flex;gap:12px;align-items:center"><span style="font-size:20px">💬</span><div style="flex:1"><b>Slack webhook</b><div class="small muted">digest in your DMs every morning</div></div></div>
-      </div>
-      <p class="small faint" style="margin-top:14px">Finish takes you to Connect to knock these out.</p>`,
-    collect: () => {},
+    after: () => {
+      $('#ob-innertarget')?.addEventListener('input', e => { $('#ob-innertarget-val').textContent = e.target.value; });
+      $('#ob-datesgoal')?.addEventListener('input', e => { $('#ob-datesgoal-val').textContent = e.target.value; });
+    },
   },
 ];
 
-function renderWizard() {
-  const step = WIZ_STEPS[wiz.step];
-  const last = wiz.step === WIZ_STEPS.length - 1;
-  const dlg = $('#wizardDialog');
-  dlg.innerHTML = `
-    <div class="wiz-dots">${WIZ_STEPS.map((_, i) => `<span class="dot ${i <= wiz.step ? 'on' : ''}"></span>`).join('')}</div>
-    <div class="wiz-step ${wiz.dir < 0 ? 'back' : ''}">
-      <div class="wiz-title">${step.title}</div>
-      <div class="wiz-sub">${step.sub}</div>
-      ${step.body(wiz.data)}
-    </div>
-    <div class="dialog-actions">
-      ${wiz.step > 0 ? `<button class="btn ghost" id="wz-back">← Back</button>` : `<button class="btn ghost" id="wz-skip">Later</button>`}
-      <span class="spacer"></span>
-      <button class="btn accent big" id="wz-next">${last ? 'Finish ✦' : 'Next →'}</button>
+VIEWS.welcome = function renderOnboarding() {
+  if (!ob) obInit();
+
+  // The finale sits one past the last question — the payoff screen.
+  if (ob.step >= OB_STEPS.length) return renderObFinale();
+
+  const step = OB_STEPS[ob.step];
+  const d = ob.data;
+  const pct = Math.round((ob.step / (OB_STEPS.length + 1)) * 100);
+  const last = ob.step === OB_STEPS.length - 1;
+
+  $('#view').innerHTML = `
+    <div class="ob">
+      <div class="ob-progress"><div class="ob-bar" style="width:${pct}%"></div></div>
+      <div class="ob-stage ${ob.dir < 0 ? 'back' : ''}">
+        <div class="ob-eyebrow">${esc(step.eyebrow)}</div>
+        <h1 class="ob-title">${typeof step.title === 'function' ? step.title(d) : esc(step.title)}</h1>
+        <p class="ob-sub">${step.sub}</p>
+        <div class="ob-body">${step.body(d)}</div>
+      </div>
+      <div class="ob-nav">
+        ${ob.step > 0
+          ? `<button class="btn ghost" data-act="obBack">← Back</button>`
+          : ob.editing ? `<button class="btn ghost" data-act="obExit">Cancel</button>` : ''}
+        <span class="spacer"></span>
+        <span class="ob-hint">↵ enter</span>
+        <button class="btn accent big" data-act="obNext">${last ? 'See my orbit ✦' : 'Continue'}</button>
+      </div>
     </div>
   `;
 
-  dlg.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
-    const arr = wiz.data[b.dataset.pick];
-    const v = b.dataset.val;
-    const i = arr.indexOf(v);
-    i >= 0 ? arr.splice(i, 1) : arr.push(v);
+  bindPickers($('#view'), d, () => VIEWS.welcome());
+  step.after?.();
+
+  $('#ob-custom-add')?.addEventListener('click', () => {
+    const v = $('#ob-custom').value.trim().toLowerCase();
+    if (v && !d.interests.includes(v)) { d.interests.push(v); VIEWS.welcome(); }
+  });
+  $('#ob-goal-add')?.addEventListener('click', () => {
+    const v = $('#ob-goal-custom').value.trim();
+    if (v) { step.collect(d); d.customGoals.push({ id: uid(), text: v }); VIEWS.welcome(); }
+  });
+  $('#view').querySelectorAll('[data-goal-rm]').forEach(b => b.addEventListener('click', () => {
+    step.collect(d);
+    d.customGoals.splice(+b.dataset.goalRm, 1);
+    VIEWS.welcome();
+  }));
+  $('#view').querySelectorAll('[data-ob-city]').forEach(b => b.addEventListener('click', () => {
+    $('#ob-city').value = b.dataset.obCity;
+    ACTIONS.obNext();
+  }));
+
+  // Enter advances, except in the small "add another" inputs.
+  $('#view').querySelectorAll('input:not([type=range])').forEach(inp =>
+    inp.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (inp.id === 'ob-custom') { $('#ob-custom-add').click(); return; }
+      if (inp.id === 'ob-goal-custom') { $('#ob-goal-add').click(); return; }
+      ACTIONS.obNext();
+    }));
+
+  $('#view').querySelector('[autofocus]')?.focus();
+};
+
+// Shared chip / radio-card wiring — onboarding and the circle builder both use it.
+function bindPickers(root, data, rerender) {
+  root.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', () => {
+    const arr = data[b.dataset.pick];
+    const i = arr.indexOf(b.dataset.val);
+    i >= 0 ? arr.splice(i, 1) : arr.push(b.dataset.val);
     b.classList.toggle('on');
   }));
-  dlg.querySelectorAll('[data-pick-one]').forEach(b => b.addEventListener('click', () => {
-    wiz.data[b.dataset.pickOne] = b.dataset.val;
-    dlg.querySelectorAll(`[data-pick-one="${b.dataset.pickOne}"]`).forEach(x => x.classList.toggle('on', x === b));
+  root.querySelectorAll('[data-pick-one]').forEach(b => b.addEventListener('click', () => {
+    data[b.dataset.pickOne] = b.dataset.val;
+    root.querySelectorAll(`[data-pick-one="${b.dataset.pickOne}"]`)
+      .forEach(x => x.classList.toggle('on', x === b));
   }));
-  $('#wz-custom-add')?.addEventListener('click', () => {
-    const v = $('#wz-custom').value.trim().toLowerCase();
-    if (v && !wiz.data.interests.includes(v)) { wiz.data.interests.push(v); renderWizard(); }
-  });
-  $('#wz-custom')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); $('#wz-custom-add').click(); }
-  });
-  $('#wz-goal-add')?.addEventListener('click', () => {
-    const v = $('#wz-goal-custom').value.trim();
-    if (v) { wiz.data.customGoals.push({ id: uid(), text: v }); WIZ_STEPS[wiz.step].collect(wiz.data); renderWizard(); }
-  });
-  $('#wz-goal-custom')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); $('#wz-goal-add').click(); }
-  });
-  dlg.querySelectorAll('[data-goal-rm]').forEach(b => b.addEventListener('click', () => {
-    WIZ_STEPS[wiz.step].collect(wiz.data);
-    wiz.data.customGoals.splice(+b.dataset.goalRm, 1);
-    renderWizard();
-  }));
-
-  $('#wz-back')?.addEventListener('click', () => { step.collect(wiz.data); wiz.dir = -1; wiz.step--; renderWizard(); });
-  $('#wz-skip')?.addEventListener('click', () => {
-    S.settings.profile.completed = true;
-    persist();
-    dlg.close();
-  });
-  $('#wz-next').addEventListener('click', () => {
-    step.collect(wiz.data);
-    if (!last) { wiz.dir = 1; wiz.step++; renderWizard(); return; }
-    finishWizard();
-    dlg.close();
-  });
+  void rerender;
 }
 
-function finishWizard() {
-  const d = wiz.data;
+function renderObFinale() {
+  const d = ob.data;
+  const act = activePeople();
+  const hasPeople = act.length > 0;
+
+  $('#view').innerHTML = `
+    <div class="ob">
+      <div class="ob-progress"><div class="ob-bar" style="width:100%"></div></div>
+      <div class="ob-stage ob-finale">
+        ${constellationSvg({ interactive: false })}
+        <div class="ob-eyebrow">Your orbit</div>
+        <h1 class="ob-title">${hasPeople
+          ? `${act.length} ${act.length === 1 ? 'person' : 'people'} in orbit around you.`
+          : 'This is your sky. Time to put people in it.'}</h1>
+        <p class="ob-sub" style="margin-inline:auto">${hasPeople
+          ? `Orbit will keep them close and tell you what to do with them. Here's what's next.`
+          : `Add your inner circle — the handful you'd call at 2am — and everything else switches on.`}</p>
+        <div class="ob-finale-stats">
+          <span class="proof-item"><span class="pi">◍</span>${esc(d.city || 'your city')}</span>
+          <span class="proof-item"><span class="pi">✦</span>${d.interests.length} interests</span>
+          <span class="proof-item"><span class="pi">◆</span>${d.socialBudget}/week</span>
+        </div>
+      </div>
+      <div class="ob-nav" style="justify-content:center">
+        ${hasPeople
+          ? `<button class="btn accent big" data-act="obFinish" data-id="tonight">What should I do tonight? →</button>
+             <button class="btn ghost" data-act="obFinish" data-id="today">Just show me Today</button>`
+          : `<button class="btn accent big" data-act="obFinish" data-id="build">Add my people →</button>
+             <button class="btn ghost" data-act="obFinish" data-id="today">Later</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function obSave() {
+  const d = ob.data;
   S.settings.email = d.email;
+  S.settings.city = d.city;
   S.settings.interests = [...d.interests];
   S.settings.tiers = { inner: d.inner, close: d.close, warm: d.warm };
   S.settings.datingCadence = d.datingCadence;
@@ -1904,8 +2731,14 @@ function finishWizard() {
     datingMode: d.datingMode,
     dateStyles: [...d.dateStyles],
     completed: true,
-    completedAt: todayIso(),
+    completedAt: S.settings.profile.completedAt || todayIso(),
   };
+  // A different city invalidates the cached geocode and every stale run.
+  if (S.settings.profile.geo && S.settings.profile.geo.city !== d.city) {
+    S.settings.profile.geo = null;
+    S.concierge.runs = {};
+    S.concierge.weather = null;
+  }
   S.settings.goals = {
     ...S.settings.goals,
     innerTarget: d.innerTarget,
@@ -1913,10 +2746,40 @@ function finishWizard() {
     custom: [...d.customGoals],
   };
   persist();
-  confetti(36);
-  toast(d.firstName ? `You're set, ${d.firstName} ✦` : "You're set ✦");
-  location.hash = activePeople().length ? '#connect' : '#build';
-  render();
+}
+
+// ---------- landing (first ever visit) ----------
+function renderLanding() {
+  // Nothing behind the nav is worth seeing yet, so the hero gets the screen.
+  document.documentElement.dataset.route = 'landing';
+  $('#view').innerHTML = `
+    <div class="landing">
+      <div class="landing-inner">
+        <svg class="landing-mark rise" width="60" height="60" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="36" fill="none" stroke="var(--accent)" stroke-width="6" opacity="0.9"/>
+          <circle cx="50" cy="50" r="20" fill="none" stroke="var(--aurora-2)" stroke-width="3" opacity="0.5"/>
+          <circle cx="50" cy="50" r="7" fill="var(--aurora-1)"/>
+          <circle cx="50" cy="11" r="10" fill="var(--aurora-3)"/>
+        </svg>
+        <h1 class="landing-title rise" style="--i:1">
+          Fewer people,<br><span class="landing-serif aurora-text">deeper bonds.</span>
+        </h1>
+        <p class="landing-sub rise" style="--i:2">
+          Orbit keeps your closest people close — then tells you exactly what to do with them
+          tonight, or this weekend. Real places, real dates, chosen for you.
+        </p>
+        <div class="landing-actions rise" style="--i:3">
+          <button class="btn accent big" data-act="goWelcome">Begin ✦</button>
+          <a class="btn ghost big" href="#connect">How it works</a>
+        </div>
+        <div class="landing-proof rise" style="--i:4">
+          <span class="proof-item"><span class="pi">◍</span>Two minutes to set up</span>
+          <span class="proof-item"><span class="pi">✦</span>Live listings, not generic advice</span>
+          <span class="proof-item"><span class="pi">⌂</span>Your data stays yours</span>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ---------- COMMAND PALETTE ----------
@@ -1924,26 +2787,28 @@ let palSel = 0;
 function paletteItems(q) {
   const items = [];
   const add = (icon, label, hint, fn) => items.push({ icon, label, hint, fn });
+  add('☾', 'What should I do tonight?', 'Concierge', () => ACTIONS.cgJump('tonight'));
+  add('✦', 'Plan my weekend', 'Concierge', () => ACTIONS.cgJump('weekend'));
   if (!q) {
     duePeople().slice(0, 3).forEach(({ p, d }) =>
       add(initials(p.name), `Reach out: ${p.name}`, `${d.overdue}d overdue`, () => openPersonDialog(p.id)));
   }
   add('＋', 'Add person', 'People', () => openPersonDialog(null));
-  add('💘', 'Add dating prospect', 'Dating', () => openPersonDialog(null, { type: 'dating', tier: 'inner' }));
-  add('🗓', 'New plan', 'Plans', () => openPlanDialog({}));
-  add('✨', 'Add idea', 'Ideas', () => openIdeaDialog(null));
+  add('♥', 'Add dating prospect', 'Dating', () => openPersonDialog(null, { type: 'dating', tier: 'inner' }));
+  add('◫', 'New plan', 'Plans', () => openPlanDialog({}));
+  add('✧', 'Add idea', 'Ideas', () => openIdeaDialog(null));
   add('⚡', 'Triage contacts', 'People', () => location.hash = '#triage');
-  add('🌱', 'Build your orbit', 'Setup', () => { buildStep = 0; location.hash = '#build'; });
-  add('🧭', 'Weekly review', 'Ritual', () => location.hash = '#review');
+  add('◉', 'Add people', 'Setup', () => { buildStep = 0; location.hash = '#build'; });
+  add('◈', 'Weekly review', 'Ritual', () => location.hash = '#review');
   add('◐', 'Toggle dark mode', 'Theme', toggleTheme);
-  add('✦', 'Profile & settings', 'Setup', () => openWizard());
-  if (syncCfg?.gistId) add('🔄', 'Sync now', 'Sync', () => { pushSync(); toast('Syncing…'); });
-  ['today', 'people', 'dating', 'ideas', 'plans', 'digest', 'connect'].forEach(v =>
+  add('✦', 'Profile & settings', 'Setup', () => { ob = null; openWizard(); });
+  if (syncCfg?.gistId) add('⟳', 'Sync now', 'Sync', () => { pushSync(); toast('Syncing…'); });
+  ['today', 'tonight', 'people', 'dating', 'ideas', 'plans', 'digest', 'connect'].forEach(v =>
     add('▸', `Go to ${v[0].toUpperCase() + v.slice(1)}`, 'Navigate', () => location.hash = '#' + v));
   activePeople().forEach(p =>
     add(initials(p.name), p.name, TIER_LABEL[p.tier], () => openPersonDialog(p.id)));
   S.ideas.forEach(i =>
-    add('💡', `Plan: ${i.title}`, i.hood || 'Idea', () => openPlanDialog({ ideaId: i.id })));
+    add('✧', `Plan: ${i.title}`, i.hood || 'Idea', () => openPlanDialog({ ideaId: i.id })));
 
   if (!q) return items.slice(0, 9);
   const ql = q.toLowerCase();
@@ -2008,14 +2873,16 @@ function openMoreSheet() {
   const sheet = $('#moreSheet');
   sheet.innerHTML = `
     <div class="sheet-list">
-      <a href="#plans" data-close><span class="si">🗓</span>Plans</a>
-      <a href="#review" data-close><span class="si">🧭</span>Weekly review</a>
-      <a href="#build" data-close><span class="si">🌱</span>Build your orbit</a>
-      <a href="#digest" data-close><span class="si">📰</span>Digest</a>
-      <a href="#connect" data-close><span class="si">🔌</span>Connect</a>
-      <button data-run="wizard"><span class="si">✦</span>Profile & settings</button>
+      <a href="#weekend" data-close><span class="si">✦</span>Plan my weekend</a>
+      <a href="#plans" data-close><span class="si">◫</span>Plans</a>
+      <a href="#ideas" data-close><span class="si">✧</span>Saved ideas</a>
+      <a href="#review" data-close><span class="si">◈</span>Weekly review</a>
+      <a href="#build" data-close><span class="si">◉</span>Add people</a>
+      <a href="#digest" data-close><span class="si">▤</span>Digest</a>
+      <a href="#connect" data-close><span class="si">⚯</span>Connect</a>
+      <button data-run="wizard"><span class="si">✦</span>Profile &amp; settings</button>
       <button data-run="theme"><span class="si">◐</span>Toggle theme</button>
-      ${syncCfg?.gistId ? '<button data-run="sync"><span class="si">🔄</span>Sync now</button>' : ''}
+      ${syncCfg?.gistId ? '<button data-run="sync"><span class="si">⟳</span>Sync now</button>' : ''}
     </div>
   `;
   sheet.querySelectorAll('[data-close]').forEach(a => a.addEventListener('click', () => sheet.close()));
@@ -2065,6 +2932,105 @@ function addToTriage(names) {
 }
 
 const ACTIONS = {
+  // ---------- concierge ----------
+  cgMode(mode) {
+    location.hash = mode === 'weekend' ? '#weekend' : '#tonight';
+  },
+  cgJump(mode) {
+    location.hash = mode === 'weekend' ? '#weekend' : '#tonight';
+  },
+  cgGo() {
+    const vibe = ($('#cgVibe')?.value || '').trim();
+    S.concierge.vibe = vibe;
+    persist();
+    const mode = conciergeMode();
+    const cached = S.concierge.runs[conciergeKey(mode, conciergeDate(mode), vibe)];
+    runConcierge({ mode, vibe, force: !!cached?.picks?.length });
+  },
+  cgRefresh() {
+    const mode = conciergeMode();
+    runConcierge({ mode, vibe: S.concierge.vibe || '', force: true });
+  },
+  cgStop() {
+    cgAbort?.abort();
+    cgRun = null;
+    renderConciergeBody();
+  },
+  cgShareAll() {
+    const mode = conciergeMode();
+    const picks = currentPicks();
+    shareItinerary(picks, mode === 'weekend'
+      ? `${S.settings.city} this weekend`
+      : `${fmtDay(conciergeDate(mode))} in ${S.settings.city}`);
+  },
+  pickPlan(id) {
+    const pick = findPick(id);
+    if (!pick) return;
+    const buddy = personByFirstName(pick.bring);
+    openPlanDialog({
+      personId: buddy?.id,
+      date: pick.date,
+      time: pick.startTime || '19:00',
+      title: pick.title,
+      place: [pick.venue, pick.neighborhood].filter(Boolean).join(', '),
+      notes: [pick.tip, pick.url].filter(Boolean).join('\n'),
+    });
+  },
+  pickSave(id) {
+    const pick = findPick(id);
+    if (!pick) return;
+    S.ideas.unshift({
+      id: uid(),
+      title: pick.title,
+      tags: [pick.kind, ...(pick.price ? [pick.price] : [])],
+      hood: pick.neighborhood || pick.venue || '',
+      cost: pick.price === 'free' ? 'free' : pick.price,
+      best: 'either',
+      notes: [pick.why, pick.tip, pick.url].filter(Boolean).join('\n'),
+      favorite: false,
+    });
+    save();
+    toast('Saved to your ideas ✦');
+  },
+  pickShare(id) {
+    const pick = findPick(id);
+    if (pick) shareItinerary([pick], pick.title);
+  },
+
+  // ---------- onboarding ----------
+  goWelcome() { location.hash = '#welcome'; },
+  obNext() {
+    const step = OB_STEPS[ob.step];
+    step.collect(ob.data);
+    const ok = step.valid ? step.valid(ob.data) : true;
+    if (ok !== true) { toast(ok); return; }
+    ob.dir = 1;
+    ob.step++;
+    if (ob.step >= OB_STEPS.length) obSave();
+    VIEWS.welcome();
+    scrollTo({ top: 0, behavior: 'instant' });
+  },
+  obBack() {
+    OB_STEPS[ob.step]?.collect(ob.data);
+    ob.dir = -1;
+    ob.step--;
+    VIEWS.welcome();
+  },
+  obExit() { ob = null; location.hash = '#today'; },
+  obFinish(where) {
+    const first = ob.data.firstName;
+    ob = null;
+    if (!reduceMotion) confetti(40);
+    toast(first ? `You're set, ${first} ✦` : "You're set ✦");
+    location.hash = where === 'tonight' ? '#tonight' : where === 'build' ? '#build' : '#today';
+  },
+  sharedStart() {
+    sharedPayload = null;
+    history.replaceState(null, '', location.pathname + location.search);
+    location.hash = '#welcome';
+    render();
+  },
+
   log(id) {
     const p = person(id);
     logContact(p, p.type === 'dating' ? 'date' : 'catchup', '');
@@ -2258,6 +3224,38 @@ const ACTIONS = {
       VIEWS.connect();
     }
   },
+  cgSaveProxy() {
+    const v = $('#cg-proxy').value.trim();
+    if (v && !/^https?:\/\//.test(v)) { toast('That needs to be a full https:// URL'); return; }
+    S.settings.integrations.proxyUrl = v;
+    S.concierge.runs = {};
+    persist();
+    toast(v ? 'Using your proxy ✦' : 'Back to the default proxy');
+    VIEWS.connect();
+  },
+  cgClearProxy() {
+    S.settings.integrations.proxyUrl = '';
+    persist();
+    toast('Reset to the default proxy');
+    VIEWS.connect();
+  },
+  async cgTestProxy(_, btn) {
+    const url = ($('#cg-proxy').value.trim() || DEFAULT_PROXY_URL).replace(/\/+$/, '');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin">◌</span> Testing…';
+    try {
+      const r = await fetch(url + '/health');
+      const j = await r.json();
+      if (!j.ok) throw new Error('Unexpected response');
+      toast(j.providers?.length
+        ? `Connected — ${j.providers.join(' + ')} ready ✦`
+        : 'Reachable, but no model key is set on that proxy');
+    } catch {
+      toast('Could not reach that proxy');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Test connection';
+  },
   exportJson() {
     const a = document.createElement('a');
     a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(S, null, 2));
@@ -2275,7 +3273,7 @@ $('#view').addEventListener('click', e => {
   if (fn) fn(t.dataset.id, t);
 });
 
-$('#settingsBtn').addEventListener('click', () => openWizard());
+$('#settingsBtn').addEventListener('click', () => { ob = null; openWizard(); });
 $('#themeBtn').addEventListener('click', toggleTheme);
 $('#paletteBtn').addEventListener('click', openPalette);
 $('#moreTab').addEventListener('click', openMoreSheet);
@@ -2295,8 +3293,17 @@ $('#themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ?
   }
   snapshotHistory();
   persist();
+  initStarfield();
+
+  // A shared link arrives as #s=<token>. Decode before the first paint so the
+  // recipient never sees someone else's Today view flash past.
+  const hash = location.hash.slice(1);
+  if (hash.startsWith('s=')) {
+    if (await applyShareToken(hash.slice(2))) return;
+    route = 'today';
+  }
+
   render();
-  if (!S.settings.profile.completed) setTimeout(() => openWizard(), 600);
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }

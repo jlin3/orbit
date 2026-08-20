@@ -3,6 +3,11 @@ data.json
 data.json.tmp
 backups/
 
+# secrets — the proxy's model keys live in wrangler secrets, never in the repo
+.env
+.env.*
+.dev.vars
+
 # noise
 *.log
 .DS_Store

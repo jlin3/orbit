@@ -3,44 +3,60 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Orbit</title>
-  <meta name="description" content="Fewer people, deeper bonds. A personal relationship manager.">
+  <title>Orbit — fewer people, deeper bonds</title>
+  <meta name="description" content="Orbit keeps your closest people close, and tells you exactly what to do tonight and this weekend.">
   <script>
-    const t = localStorage.getItem('orbit-theme')
-      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    document.documentElement.dataset.theme = t;
+    // Deep Field is the identity of the app, so dark is the default regardless
+    // of OS preference. Only an explicit choice here switches it.
+    document.documentElement.dataset.theme = localStorage.getItem('orbit-theme') || 'dark';
   </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap">
   <link rel="stylesheet" href="./styles.css">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./apple-touch-icon.png">
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f1e8">
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16130e">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0b14">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f2f9">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Orbit">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Orbit">
+  <meta property="og:title" content="Orbit — fewer people, deeper bonds">
+  <meta property="og:description" content="Keeps your closest people close, and tells you exactly what to do tonight and this weekend.">
+  <meta property="og:url" content="https://jlin3.github.io/orbit/">
+  <meta property="og:image" content="https://jlin3.github.io/orbit/og.svg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Orbit — fewer people, deeper bonds">
+  <meta name="twitter:description" content="Keeps your closest people close, and tells you exactly what to do tonight and this weekend.">
+  <meta name="twitter:image" content="https://jlin3.github.io/orbit/og.svg">
 </head>
 <body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+
   <header class="topbar">
     <div class="topbar-inner">
-      <div class="brand">
-        <svg width="24" height="24" viewBox="0 0 100 100"><circle class="o-ring" cx="50" cy="50" r="36" fill="none" stroke-width="12"/><circle class="o-moon" cx="50" cy="11" r="11"/></svg>
+      <a class="brand" href="#today" style="text-decoration:none;color:inherit">
+        <svg width="22" height="22" viewBox="0 0 100 100"><circle class="o-ring" cx="50" cy="50" r="36" fill="none" stroke-width="10"/><circle class="o-moon" cx="50" cy="11" r="11"/></svg>
         Orbit
-      </div>
+      </a>
       <nav id="nav">
         <a href="#today" data-view="today">Today <span class="count" id="dueCount" hidden></span></a>
+        <a href="#tonight" data-view="tonight">Tonight</a>
         <a href="#people" data-view="people">People</a>
         <a href="#dating" data-view="dating">Dating</a>
-        <a href="#ideas" data-view="ideas">Ideas</a>
         <a href="#plans" data-view="plans">Plans</a>
-        <a href="#digest" data-view="digest">Digest</a>
+        <a href="#ideas" data-view="ideas">Saved</a>
         <a href="#connect" data-view="connect">Connect</a>
       </nav>
       <div class="tools">
         <span class="sync-dot" id="syncDot" hidden title="Synced"></span>
         <button class="kbd-hint" id="paletteBtn" title="Command palette">⌘K</button>
         <button class="icon-btn" id="themeBtn" title="Toggle theme">☾</button>
-        <button class="icon-btn" id="settingsBtn" title="Profile & settings">✦</button>
+        <button class="icon-btn" id="settingsBtn" title="Profile &amp; settings">✦</button>
       </div>
     </div>
   </header>
@@ -48,17 +64,16 @@
   <main id="view"></main>
 
   <nav id="tabbar">
-    <a href="#today" data-view="today"><span class="ti">☀︎</span>Today<span class="tab-badge" id="tabDue" hidden></span></a>
+    <a href="#today" data-view="today"><span class="ti">◍</span>Today<span class="tab-badge" id="tabDue" hidden></span></a>
+    <a href="#tonight" data-view="tonight"><span class="ti">✦</span>Tonight</a>
     <a href="#people" data-view="people"><span class="ti">◉</span>People</a>
     <a href="#dating" data-view="dating"><span class="ti">♥︎</span>Dating</a>
-    <a href="#ideas" data-view="ideas"><span class="ti">✧</span>Ideas</a>
     <button id="moreTab"><span class="ti">≡</span>More</button>
   </nav>
 
   <dialog id="personDialog"></dialog>
   <dialog id="planDialog"></dialog>
   <dialog id="ideaDialog"></dialog>
-  <dialog id="wizardDialog"></dialog>
   <dialog id="paletteDialog"></dialog>
   <dialog id="moreSheet" class="sheet"></dialog>
 
