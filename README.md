@@ -15,22 +15,25 @@ Zero dependencies, no build step. One codebase runs two ways:
   (AES-GCM, key derived from a passphrase via PBKDF2; GitHub only ever stores ciphertext).
 
 A third piece is optional but makes the app what it is: [`proxy/`](./proxy) is a small
-Cloudflare Worker that holds a model key so the concierge works for everyone you share
+Cloudflare Worker that holds a model key so the planner works for everyone you share
 Orbit with, not just people who own an API key.
 
 ## The system
 
-### The concierge
+### The planner
 
-**Tonight** and **The weekend** answer the two questions the app exists for. Both search
-the live web through the proxy, then filter results through your profile — your city, your
-interests, your neighborhoods, your budget — and cross-reference your circle to suggest
-*who to bring*, favoring whoever you've been meaning to see. Results stream in one card at
-a time, and each one converts to a plan, saves to your library, or shares as a link.
+**Plan** is the centerpiece: a calendar of tonight, this weekend, or the next seven days.
+Each day is split into morning, afternoon, happy hour, dinner, and night. The grid paints
+instantly from your taste engine (saved events, venues, and ideas), then one streaming
+search layers in live, verified options. Type what you're in the mood for — "rainy and
+low-key", "impress Chen" — and the board reshapes. Lock the ones you want, dismiss the
+rest, and add the itinerary to Plans or share it as a link.
 
 Weather comes from Open-Meteo (keyless), so a rainy Friday quietly pushes the picks indoors.
-Picks are grounded: the request carries the top ~20 candidates from your taste engine, so
-the model prefers things your own sources already vetted (and verifies them with search).
+Live options are grounded: the request carries the top ~20 candidates from your taste
+engine, so the model prefers things your own sources already vetted (and verifies them
+with search). `#tonight` and `#weekend` still work; they open the same calendar on the
+matching range.
 
 ### The taste engine
 

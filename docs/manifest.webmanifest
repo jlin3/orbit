@@ -13,6 +13,8 @@
     { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
   ],
   "shortcuts": [
+    { "name": "Plan", "url": "./#plan" },
+    { "name": "Plan", "url": "./#plan" },
     { "name": "What should I do tonight?", "url": "./#tonight" },
     { "name": "Plan my weekend", "url": "./#weekend" }
   ]
