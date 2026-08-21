@@ -173,6 +173,28 @@ test('no candidates means no vetted section', () => {
   assert.doesNotMatch(p, /VETTED CANDIDATES/);
 });
 
+test('planner mode asks for slot-enum options weighted to the evening', () => {
+  const p = buildPrompt({
+    mode: 'planner',
+    city: 'New York',
+    dates: ['2026-08-21', '2026-08-22', '2026-08-23'],
+    vibe: 'impress Chen',
+    locked: ['2026-08-21|dinner'],
+    profile: { firstName: 'Jesse', interests: ['comedy'] },
+    companions: [{ name: 'Chen', relationship: 'dating · new', overdueDays: 5 }],
+  });
+  assert.match(p, /one of: morning, afternoon, happyhour, dinner, night/);
+  assert.match(p, /impress Chen/);
+  assert.match(p, /comedy/);
+  assert.match(p, /Chen/);
+  assert.match(p, /2 × happyhour on 2026-08-21/);
+  assert.match(p, /2 × night on 2026-08-21/);
+  assert.doesNotMatch(p, /dinner on 2026-08-21/);
+  assert.match(p, /already-chosen cells: 2026-08-21\|dinner/);
+  // 3 days × 8 slots, minus the locked Friday dinner (2) = 22
+  assert.match(p, /Emit 22 lines/);
+});
+
 test('anthropic stream shape produces picks and search status', async () => {
   const events = await collect(transform(providerStream([
     'data: {"type":"content_block_start","content_block":{"type":"server_tool_use"}}\n\n',

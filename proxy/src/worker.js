@@ -138,6 +138,22 @@ const PICK_SHAPE = `{
   "indoor": true
 }`;
 
+const PICK_SHAPE_PLANNER = `{
+  "slot": "one of: morning, afternoon, happyhour, dinner, night",
+  "date": "YYYY-MM-DD",
+  "title": "the thing to do, specific and under 60 chars",
+  "venue": "venue or place name",
+  "neighborhood": "neighborhood or area",
+  "startTime": "HH:MM in 24h local time, or null if it runs all day",
+  "price": "one of: free, $, $$, $$$",
+  "kind": "one of: music, comedy, food, drinks, art, film, outdoors, active, wellness, games, nightlife, home",
+  "why": "one sentence, second person, why this fits THEM specifically",
+  "tip": "one short insider line — booking, timing, what to order",
+  "url": "a real URL for tickets/listing/venue, or null if you are not sure",
+  "bring": "first name of the suggested companion from their circle, or null",
+  "indoor": true
+}`;
+
 function json(obj, status, origin) {
   return new Response(JSON.stringify(obj), {
     status,
@@ -198,6 +214,26 @@ function pickProvider(env, requested) {
   return available[0];
 }
 
+const PLANNER_SLOTS = [
+  { id: 'morning', n: 1 },
+  { id: 'afternoon', n: 1 },
+  { id: 'happyhour', n: 2 },
+  { id: 'dinner', n: 2 },
+  { id: 'night', n: 2 },
+];
+
+function plannerWanted(dates, locked) {
+  const skip = new Set(locked || []);
+  const wanted = [];
+  for (const date of dates) {
+    for (const { id, n } of PLANNER_SLOTS) {
+      if (skip.has(`${date}|${id}`)) continue;
+      wanted.push({ date, slot: id, n });
+    }
+  }
+  return wanted;
+}
+
 function buildPrompt(body) {
   const {
     mode = 'tonight',
@@ -210,6 +246,7 @@ function buildPrompt(body) {
     profile = {},
     companions = [],
     candidates = [],
+    locked = [],
   } = body;
 
   const {
@@ -219,6 +256,77 @@ function buildPrompt(body) {
     dateStyles = [],
     datingMode = '',
   } = profile;
+
+  if (mode === 'planner') {
+    const windowDates = (dates.length ? dates : [date]).filter(Boolean);
+    const wanted = plannerWanted(windowDates, locked);
+    const count = wanted.reduce((n, w) => n + w.n, 0);
+    const quota = wanted.map(w => `${w.n} × ${w.slot} on ${w.date}`).join('\n');
+    const lockedLine = (locked || []).length
+      ? `Do not emit anything for these already-chosen cells: ${locked.join(', ')}.`
+      : '';
+
+    const grounded = (candidates || []).slice(0, 20).map(c => {
+      const bits = [c.title || c.name];
+      if (c.venue) bits.push(`@ ${c.venue}`);
+      if (c.hood || c.neighborhood) bits.push(`(${c.hood || c.neighborhood})`);
+      if (c.date) bits.push(c.date);
+      if (c.availability) bits.push(c.availability);
+      if (c.tags?.length) bits.push(`[${c.tags.slice(0, 4).join(', ')}]`);
+      if (c.url) bits.push(c.url);
+      return `- ${bits.join(' ')}`;
+    });
+
+    const people = companions.length
+      ? companions.map(c => {
+          const bits = [c.relationship || 'friend'];
+          if (c.overdueDays > 0) bits.push(`${c.overdueDays} days since you last connected`);
+          if (c.interests?.length) bits.push(`into ${c.interests.join(', ')}`);
+          return `- ${c.name} (${bits.join('; ')})`;
+        }).join('\n')
+      : '- (nobody in their circle yet — leave "bring" null)';
+
+    return [
+      `You are Orbit's planner. ${firstName ? firstName + ' lives' : 'The user lives'} in ${city}.`,
+      '',
+      `Fill a calendar for ${windowDates.join(', ') || date}. Each day is split into morning, afternoon, happyhour, dinner, and night.`,
+      `Return exactly ${count} competing options, allocated as:`,
+      quota,
+      lockedLine,
+      '',
+      'THEIR PROFILE',
+      `- Into: ${interests.join(', ') || 'not specified'}`,
+      `- Usually hangs around: ${neighborhoods.join(', ') || 'anywhere in ' + city}`,
+      dateStyles.length ? `- Enjoys these kinds of dates: ${dateStyles.join(', ')}` : null,
+      datingMode ? `- Dating mode: ${datingMode}` : null,
+      budget ? `- Budget: ${budget}` : null,
+      vibe ? `- What they asked for: "${vibe}"` : null,
+      weather ? `- Forecast: ${weather}` : null,
+      '',
+      'THEIR CIRCLE (suggest who to bring, favoring people they have not seen in a while)',
+      people,
+      '',
+      ...(grounded.length ? [
+        'VETTED CANDIDATES (from their own sources — newsletters, local accounts, availability checks). Prefer these when they fit the request; verify dates and hours with search before using one:',
+        ...grounded,
+        '',
+      ] : []),
+      'RULES',
+      `1. Search the web first. Only suggest things that are actually happening in ${city} on the given dates, or venues you have confirmed are open.`,
+      '2. Prefer primary sources: venue sites, ticketing pages, event listings, local press. Check dates carefully — never surface a past event.',
+      '3. No generic filler ("go to a nice restaurant"). Name the place. Options in the same cell must be different places.',
+      '4. Bias toward their interests and neighborhoods, but include one thing that pleasantly surprises them.',
+      '5. If the forecast is bad, favor indoor picks and set "indoor" accordingly.',
+      '6. Slot meanings: morning = brunch, gym, wellness, a walk; afternoon = museums, outdoors, matinees; happyhour = drinks; dinner = a real table; night = shows, comedy, music, late entertainment.',
+      '7. "slot" must be exactly one of: morning, afternoon, happyhour, dinner, night.',
+      '',
+      'OUTPUT FORMAT — this matters',
+      `Emit one JSON object per line (NDJSON). No markdown fences, no wrapper array, no commentary before or after. Each line must be a complete, parseable JSON object of exactly this shape:`,
+      PICK_SHAPE_PLANNER,
+      '',
+      `Emit ${count} lines and then stop.`,
+    ].filter(l => l !== null).join('\n');
+  }
 
   const count = mode === 'weekend' ? 5 : 4;
   const window = mode === 'weekend'

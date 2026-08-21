@@ -81,6 +81,8 @@ function normalizeState() {
   S.meta = S.meta || { updatedAt: 0 };
   S.events = S.events || [];
   S.venues = S.venues || [];
+  S.plans = S.plans || [];
+  S.ideas = S.ideas || [];
   S.settings.tasteWeights = S.settings.tasteWeights || {};
   for (const e of S.events) if (!e.id) e.id = uid();
   for (const v of S.venues) if (!v.id) v.id = uid();
@@ -92,6 +94,11 @@ function normalizeState() {
   S.concierge = S.concierge || {};
   S.concierge.runs = S.concierge.runs || {};
   delete S.concierge.mode; // the route decides this now
+  S.planner = S.planner || {};
+  S.planner.range = ['tonight', 'weekend', 'week'].includes(S.planner.range) ? S.planner.range : 'weekend';
+  S.planner.prompt = typeof S.planner.prompt === 'string' ? S.planner.prompt : '';
+  S.planner.boards = S.planner.boards || {};
+  S.planner.pickedDate = S.planner.pickedDate || S.concierge.pickedDate || '';
   // sample/demo data is retired — real people only
   if (S.people.some(p => p.sample) || (S.plans || []).some(pl => pl.sample)) {
     S.people = S.people.filter(p => !p.sample);
@@ -718,7 +725,7 @@ function initStarfield() {
 // ---------- router ----------
 const VIEWS = {};
 // Routes that borrow another tab's highlight in the nav.
-const ROUTE_ALIAS = { triage: 'people', weekend: 'tonight', build: 'people' };
+const ROUTE_ALIAS = { triage: 'people', weekend: 'plan', tonight: 'plan', build: 'people' };
 
 function render() {
   // A shared itinerary owns the whole screen — it's the one view a stranger
@@ -732,6 +739,9 @@ function render() {
   const doRender = () => {
     // Onboarding and shared plans get the whole screen — CSS hides the chrome.
     document.documentElement.dataset.route = route;
+    if (route !== 'plan' && route !== 'tonight' && route !== 'weekend') {
+      document.documentElement.classList.remove('has-itin');
+    }
     const highlight = ROUTE_ALIAS[route] || route;
     $$('#nav a, #tabbar a').forEach(a => {
       const on = a.dataset.view === highlight;
@@ -774,6 +784,7 @@ window.addEventListener('hashchange', () => {
   const hash = location.hash.slice(1);
   cgAbort?.abort();
   cgRun = null;
+  plRun = null;
 
   if (hash.startsWith('s=')) {
     applyShareToken(hash.slice(2)).then(ok => {
@@ -870,6 +881,44 @@ const KIND_ICON = {
   outdoors: '⛰', active: '⚡', wellness: '❁', games: '◆', nightlife: '☾', home: '⌂',
 };
 
+const SLOTS = [
+  { id: 'morning',   label: 'Morning',     time: '09:00', kinds: ['active', 'wellness', 'outdoors', 'food'] },
+  { id: 'afternoon', label: 'Afternoon',   time: '14:00', kinds: ['art', 'outdoors', 'film', 'games', 'active'] },
+  { id: 'happyhour', label: 'Happy hour',  time: '18:00', kinds: ['drinks', 'food'] },
+  { id: 'dinner',    label: 'Dinner',      time: '20:00', kinds: ['food', 'drinks'] },
+  { id: 'night',     label: 'Night',       time: '21:30', kinds: ['music', 'comedy', 'nightlife', 'film', 'games'] },
+];
+const SLOT_IDS = new Set(SLOTS.map(s => s.id));
+const KIND_SLOT = {
+  active: 'morning', wellness: 'morning',
+  outdoors: 'afternoon', art: 'afternoon', film: 'afternoon', games: 'afternoon',
+  drinks: 'happyhour', food: 'dinner',
+  music: 'night', comedy: 'night', nightlife: 'night', home: 'night',
+};
+const TAG_KIND = {
+  music: 'music', 'live music': 'music', jazz: 'music', concert: 'music', show: 'music',
+  comedy: 'comedy',
+  food: 'food', dinner: 'food', brunch: 'food', coffee: 'food', restaurant: 'food',
+  drinks: 'drinks', cocktails: 'drinks', wine: 'drinks', bar: 'drinks', 'happy hour': 'drinks',
+  art: 'art', museums: 'art', theater: 'art',
+  film: 'film',
+  outdoors: 'outdoors',
+  active: 'active', running: 'active', climbing: 'active', cycling: 'active',
+  basketball: 'active', gym: 'active', workout: 'active', fitness: 'active',
+  wellness: 'wellness', yoga: 'wellness',
+  games: 'games', poker: 'games',
+  nightlife: 'nightlife', night: 'nightlife', dancing: 'nightlife', club: 'nightlife',
+};
+
+const PROMPT_HINTS = [
+  'rainy, low-key, walkable',
+  'impress a date — dinner then a show',
+  'want to move my body, then eat well',
+  'comedy and a late dinner',
+  'happy hour with someone I miss',
+  'outdoors Saturday, cozy Sunday',
+];
+
 const CITY_SUGGESTIONS = [
   'New York', 'Los Angeles', 'San Francisco', 'Chicago', 'Austin', 'Seattle',
   'Boston', 'Miami', 'Denver', 'London', 'Berlin', 'Paris', 'Toronto', 'Sydney',
@@ -886,6 +935,9 @@ function fmtTime(hhmm) {
 // never gets persisted or synced.
 let cgRun = null;
 let cgAbort = null;
+let plRun = null;
+let plOpen = new Set();
+let plAutoKey = '';
 
 function conciergeKey(mode, date, vibe) {
   return [mode, S.settings.city || '?', date, (vibe || '').trim().toLowerCase()].join('|');
@@ -893,8 +945,72 @@ function conciergeKey(mode, date, vibe) {
 
 function conciergeDate(mode) {
   if (mode === 'weekend') return weekendDates()[0];
-  const picked = S.concierge.pickedDate;
+  const picked = S.concierge.pickedDate || S.planner.pickedDate;
   return picked && picked >= todayIso() ? picked : todayIso();
+}
+
+function inferKind(tags) {
+  for (const t of tags || []) {
+    const k = TAG_KIND[normTag(t)];
+    if (k) return k;
+  }
+  return 'home';
+}
+
+function slotFromTime(hhmm) {
+  if (!/^\d{1,2}:\d{2}$/.test(hhmm || '')) return 'dinner';
+  const [h, m] = hhmm.split(':').map(Number);
+  const mins = h * 60 + m;
+  let best = SLOTS[3], dist = Infinity;
+  for (const s of SLOTS) {
+    const [sh, sm] = s.time.split(':').map(Number);
+    const d = Math.abs(mins - (sh * 60 + sm));
+    if (d < dist) { dist = d; best = s; }
+  }
+  return best.id;
+}
+
+function slotForItem(tags, startTime) {
+  if (startTime) return slotFromTime(startTime);
+  return KIND_SLOT[inferKind(tags)] || 'night';
+}
+
+function slotLabel(slot) {
+  return SLOTS.find(s => s.id === slot)?.label || slot;
+}
+
+function slotTime(slot) {
+  return SLOTS.find(s => s.id === slot)?.time || '19:00';
+}
+
+function plannerDates() {
+  const range = S.planner.range;
+  if (range === 'week') return Array.from({ length: 7 }, (_, i) => addDays(todayIso(), i));
+  if (range === 'tonight') {
+    const picked = S.planner.pickedDate;
+    return [picked && picked >= todayIso() ? picked : todayIso()];
+  }
+  return weekendDates();
+}
+
+function plannerKey() {
+  const dates = plannerDates();
+  return [S.planner.range, S.settings.city || '?', dates[0], (S.planner.prompt || '').trim().toLowerCase()].join('|');
+}
+
+function cellKey(date, slot) { return `${date}|${slot}`; }
+
+function scoreIdeaClient(i) {
+  return tasteScoreTags(i.tags) + hoodBonusClient(i.hood) + (i.favorite ? 1.5 : 0);
+}
+
+function optionDedupeKey(o) {
+  return normTag(o.title) + '|' + normTag(o.venue || '');
+}
+
+function syncRangeFromRoute() {
+  if (route === 'tonight') S.planner.range = 'tonight';
+  else if (route === 'weekend') S.planner.range = 'weekend';
 }
 
 // The URL is the source of truth for which mode you're in, so back/forward and
@@ -1123,22 +1239,305 @@ function normalizePick(raw, run) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(raw.date || '') && dates.includes(raw.date)
     ? raw.date
     : dates[0];
+  const planner = run?.mode === 'planner' || SLOT_IDS.has(raw.slot);
+  let slot;
+  if (SLOT_IDS.has(raw.slot)) slot = raw.slot;
+  else if (planner) slot = slotFromTime(raw.startTime);
+  else slot = String(raw.slot || (run?.mode === 'weekend' ? fmtDay(date) : 'Tonight')).slice(0, 40);
   return {
-    id: uid(),
-    slot: String(raw.slot || (run?.mode === 'weekend' ? fmtDay(date) : 'Tonight')).slice(0, 40),
+    id: raw.id || uid(),
+    slot,
     date,
     title: String(raw.title || '').slice(0, 140),
     venue: String(raw.venue || '').slice(0, 90),
     neighborhood: String(raw.neighborhood || '').slice(0, 60),
-    startTime: /^\d{1,2}:\d{2}$/.test(raw.startTime || '') ? raw.startTime : null,
+    startTime: /^\d{1,2}:\d{2}$/.test(raw.startTime || '') ? raw.startTime : slotTime(slot),
     price: ['free', '$', '$$', '$$$'].includes(raw.price) ? raw.price : '',
-    kind: KIND_ICON[raw.kind] ? raw.kind : 'home',
+    kind: KIND_ICON[raw.kind] ? raw.kind : inferKind([raw.kind]),
     why: String(raw.why || '').slice(0, 260),
     tip: String(raw.tip || '').slice(0, 220),
     url: /^https?:\/\//.test(raw.url || '') ? raw.url : null,
     bring: raw.bring ? String(raw.bring).slice(0, 40) : null,
     indoor: raw.indoor !== false,
+    source: raw.source === 'yours' ? 'yours' : (run?.mode === 'planner' ? 'live' : (raw.source || '')),
+    refKind: raw.refKind || null,
+    refId: raw.refId || null,
   };
+}
+
+function localOptions(dates) {
+  const cells = {};
+  for (const date of dates) for (const s of SLOTS) cells[cellKey(date, s.id)] = [];
+
+  const push = (date, slot, opt) => {
+    const k = cellKey(date, slot);
+    if (!cells[k]) return;
+    if (cells[k].some(x => optionDedupeKey(x) === optionDedupeKey(opt))) return;
+    cells[k].push(opt);
+  };
+
+  for (const e of (S.events || [])) {
+    if (e.status === 'dismissed' || !e.date || !dates.includes(e.date)) continue;
+    const kind = inferKind(e.tags);
+    const slot = slotForItem(e.tags, e.startTime || e.time);
+    push(e.date, slot, {
+      id: uid(), slot, date: e.date, title: e.title, venue: e.venue || '',
+      neighborhood: e.neighborhood || '', startTime: e.startTime || e.time || slotTime(slot),
+      price: e.price || '', kind, why: '', tip: e.notes || '', url: e.url || null,
+      bring: null, indoor: e.indoor !== false, source: 'yours', refKind: 'event', refId: e.id,
+    });
+  }
+
+  const standing = [
+    ...(S.venues || []).filter(v => v.flag !== 'dismissed').map(v => {
+      const kind = inferKind(v.tags);
+      return {
+        score: scoreVenueClient(v),
+        slot: KIND_SLOT[kind] || 'dinner',
+        opt: date => ({
+          id: uid(), slot: KIND_SLOT[kind] || 'dinner', date, title: v.name, venue: v.name,
+          neighborhood: v.hood || '', startTime: slotTime(KIND_SLOT[kind] || 'dinner'),
+          price: v.price || '', kind, why: '', tip: v.availability || '', url: v.url || v.bookVia || null,
+          bring: null, indoor: true, source: 'yours', refKind: 'venue', refId: v.id,
+        }),
+      };
+    }),
+    ...(S.ideas || []).filter(ideaFitsCity).map(i => {
+      const kind = inferKind(i.tags);
+      return {
+        score: scoreIdeaClient(i),
+        slot: KIND_SLOT[kind] || slotForItem(i.tags),
+        opt: date => ({
+          id: uid(), slot: KIND_SLOT[kind] || slotForItem(i.tags), date, title: i.title,
+          venue: i.hood || '', neighborhood: i.hood || '', startTime: slotTime(KIND_SLOT[kind] || 'night'),
+          price: i.cost || '', kind, why: '', tip: i.notes || '', url: i.url || null,
+          bring: null, indoor: true, source: 'yours', refKind: 'idea', refId: i.id,
+        }),
+      };
+    }),
+  ].sort((a, b) => b.score - a.score);
+
+  for (const [di, date] of dates.entries()) {
+    const used = new Set(Object.entries(cells)
+      .filter(([k]) => k.startsWith(date + '|'))
+      .flatMap(([, list]) => list.map(optionDedupeKey)));
+    const rotated = standing.slice(di).concat(standing.slice(0, di));
+    for (const item of rotated) {
+      const k = cellKey(date, item.slot);
+      if ((cells[k] || []).length >= 3) continue;
+      const opt = item.opt(date);
+      if (used.has(optionDedupeKey(opt))) continue;
+      push(date, item.slot, opt);
+      used.add(optionDedupeKey(opt));
+    }
+  }
+
+  for (const k of Object.keys(cells)) cells[k] = cells[k].slice(0, 3);
+  return cells;
+}
+
+function currentBoard() {
+  return S.planner.boards[plannerKey()] || { dates: plannerDates(), at: 0, options: {}, chosen: {} };
+}
+
+function ensureBoard() {
+  const key = plannerKey();
+  const dates = plannerDates();
+  let board = S.planner.boards[key];
+  if (!board) board = S.planner.boards[key] = { dates, at: 0, options: {}, chosen: {} };
+  const local = localOptions(dates);
+  for (const [cell, opts] of Object.entries(local)) {
+    const have = board.options[cell] || [];
+    const seen = new Set(have.map(optionDedupeKey));
+    board.options[cell] = have.concat(opts.filter(o => !seen.has(optionDedupeKey(o))));
+  }
+  return board;
+}
+
+function pruneBoards() {
+  const keys = Object.keys(S.planner.boards);
+  if (keys.length <= 6) return;
+  keys.sort((a, b) => (S.planner.boards[a].at || 0) - (S.planner.boards[b].at || 0))
+    .slice(0, keys.length - 6)
+    .forEach(k => delete S.planner.boards[k]);
+}
+
+function findOption(id) {
+  const board = currentBoard();
+  for (const list of Object.values(board.options || {})) {
+    const hit = list.find(o => o.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function lockedCells(board) {
+  return Object.entries(board.chosen || {}).filter(([, id]) => id).map(([cell]) => cell);
+}
+
+function chosenOptions(board) {
+  const out = [];
+  for (const [cell, id] of Object.entries(board.chosen || {})) {
+    const opt = (board.options[cell] || []).find(o => o.id === id);
+    if (opt) out.push(opt);
+  }
+  return out.sort((a, b) => (a.date + (a.startTime || '')).localeCompare(b.date + (b.startTime || '')));
+}
+
+function boardHasLive(board) {
+  return Object.values(board.options || {}).some(list => list.some(o => o.source === 'live'));
+}
+
+function mergeLiveOption(board, pick) {
+  if (!SLOT_IDS.has(pick.slot)) pick.slot = slotFromTime(pick.startTime);
+  if (!board.dates.includes(pick.date)) pick.date = board.dates[0];
+  const cell = cellKey(pick.date, pick.slot);
+  if (board.chosen[cell]) return; // locked — don't overwrite
+  const have = board.options[cell] || [];
+  if (have.some(o => optionDedupeKey(o) === optionDedupeKey(pick))) return;
+  board.options[cell] = have.concat(pick);
+}
+
+async function runPlanner({ force = false } = {}) {
+  const city = S.settings.city;
+  if (!city) { toast('Add your city first ✦'); location.hash = '#welcome'; return; }
+
+  const dates = plannerDates();
+  const key = plannerKey();
+  const board = ensureBoard();
+
+  if (!force && boardHasLive(board)) {
+    plRun = null;
+    renderPlannerBody();
+    return;
+  }
+
+  if (force) {
+    const locked = new Set(lockedCells(board));
+    if (locked.size === dates.length * SLOTS.length) {
+      toast('Everything is locked — unlock a slot to reshape');
+      return;
+    }
+    for (const cell of Object.keys(board.options)) {
+      if (locked.has(cell)) continue;
+      board.options[cell] = (board.options[cell] || []).filter(o => o.source === 'yours');
+    }
+    const local = localOptions(dates);
+    for (const [cell, opts] of Object.entries(local)) {
+      if (locked.has(cell)) continue;
+      const have = board.options[cell] || [];
+      const seen = new Set(have.map(optionDedupeKey));
+      board.options[cell] = have.concat(opts.filter(o => !seen.has(optionDedupeKey(o))));
+    }
+  }
+
+  cgAbort?.abort();
+  cgAbort = new AbortController();
+  plRun = { key, dates, status: 'Reading the room…', error: null, done: false };
+  renderPlannerBody();
+
+  const weather = await fetchWeather(dates);
+  if (weather) {
+    S.concierge.weather = { city, at: Date.now(), days: weather };
+    persist();
+  }
+  if (plRun) renderPlannerBody();
+
+  const prof = S.settings.profile || {};
+  const body = {
+    mode: 'planner',
+    city,
+    date: dates[0],
+    dates,
+    vibe: S.planner.prompt || '',
+    weather: weatherLine(weather),
+    locked: lockedCells(board),
+    profile: {
+      firstName: prof.firstName || '',
+      interests: S.settings.interests || [],
+      neighborhoods: prof.neighborhoods || [],
+      dateStyles: prof.dateStyles || [],
+      datingMode: prof.datingMode || '',
+    },
+    companions: companionsPayload(),
+    candidates: conciergeCandidates(dates),
+  };
+  if (S.settings.integrations?.provider) body.provider = S.settings.integrations.provider;
+
+  try {
+    const res = await fetch(proxyUrl() + '/concierge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: cgAbort.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      let msg = `The concierge is unreachable (${res.status}).`;
+      try {
+        const j = await res.json();
+        if (j.error) msg = j.error;
+      } catch { /* keep the status-code message */ }
+      throw new Error(msg);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (!plRun) return;
+          if (ev.type === 'status') plRun.status = ev.text;
+          else if (ev.type === 'pick') {
+            mergeLiveOption(board, normalizePick(ev.pick, { mode: 'planner', dates }));
+            board.at = Date.now();
+          } else if (ev.type === 'error') plRun.error = ev.message;
+          else if (ev.type === 'done') plRun.done = true;
+          renderPlannerBody();
+        }
+      }
+    }
+
+    if (!plRun) return;
+    if (boardHasLive(board) || Object.values(board.options).some(l => l.length)) {
+      board.at = Date.now();
+      pruneBoards();
+      persist();
+      plRun = null;
+      renderPlannerBody();
+      if (!reduceMotion && boardHasLive(board)) confetti(12);
+    } else {
+      plRun.error = plRun.error || 'Nothing came back. Try a looser prompt.';
+      plRun.done = true;
+      renderPlannerBody();
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    if (!plRun) return;
+    plRun.error = String(err.message || err);
+    plRun.done = true;
+    renderPlannerBody();
+  }
+}
+
+function maybeAutoPlan() {
+  if (!S.settings.city) return;
+  const key = plannerKey();
+  if (plAutoKey === key) return;
+  if (plRun && !plRun.done) return;
+  if (boardHasLive(ensureBoard())) { plAutoKey = key; return; }
+  plAutoKey = key;
+  runPlanner({ force: false });
 }
 
 // ---------- rendering ----------
@@ -1156,7 +1555,7 @@ function pickCard(pick, i, { readOnly = false } = {}) {
 
   return `<article class="pick-card spot" style="--i:${i};animation-delay:${i * 70}ms">
     <div class="pick-when">
-      <span class="slot">${esc(pick.slot)}</span>
+      <span class="slot">${esc(slotLabel(pick.slot))}</span>
       ${pick.startTime ? `<span class="time">${esc(fmtTime(pick.startTime))}</span>` : ''}
       ${!readOnly && pick.date !== todayIso() ? `<span class="time">${esc(fmtDate(pick.date))}</span>` : ''}
     </div>
@@ -1187,7 +1586,7 @@ function currentPicks() {
 }
 
 function findPick(id) {
-  return currentPicks().find(p => p.id === id) || null;
+  return findOption(id) || currentPicks().find(p => p.id === id) || null;
 }
 
 function weatherChip() {
@@ -1252,71 +1651,210 @@ function renderConciergeBody() {
   ].join('');
 }
 
-VIEWS.tonight = function renderConcierge() {
-  const mode = conciergeMode();
+function dayWeather(date) {
+  const w = S.concierge.weather;
+  if (!w || w.city !== S.settings.city) return null;
+  return w.days.find(d => d.date === date) || null;
+}
+
+function optionCard(opt, cell, lockedId) {
+  const locked = lockedId === opt.id;
+  const buddy = personByFirstName(opt.bring);
+  const meta = [opt.venue && opt.venue !== opt.title ? opt.venue : '', opt.neighborhood, opt.price === 'free' ? 'free' : opt.price]
+    .filter(Boolean).map(esc).join(' · ');
+  const title = opt.url
+    ? `<a href="${esc(opt.url)}" target="_blank" rel="noopener">${esc(opt.title)} ↗</a>`
+    : esc(opt.title);
+  return `<article class="pl-opt spot ${locked ? 'locked' : ''} ${opt.source === 'live' ? 'live' : 'yours'}" data-opt="${opt.id}">
+    <div class="pl-opt-kind" title="${esc(opt.kind)}">${KIND_ICON[opt.kind] || '◍'}</div>
+    <div class="pl-opt-body">
+      <h3 class="pl-opt-title">${title}</h3>
+      ${meta ? `<div class="pl-opt-meta">${meta}${opt.indoor === false ? ' · outdoors' : ''}${opt.startTime ? ` · ${esc(fmtTime(opt.startTime))}` : ''}</div>` : ''}
+      ${opt.why ? `<p class="pl-opt-why">${esc(opt.why)}</p>` : ''}
+      ${opt.tip ? `<div class="pl-opt-tip">${esc(opt.tip)}</div>` : ''}
+      ${buddy ? `<div class="pick-bring"><span class="avatar" style="${avatarStyle(buddy)}">${initials(buddy.name)}</span>bring ${esc(buddy.name.split(' ')[0])}</div>` : ''}
+      <div class="pl-opt-actions">
+        <button class="btn tiny ${locked ? 'accent' : ''}" data-act="plLock" data-id="${opt.id}">${locked ? 'Locked' : 'Choose'}</button>
+        <button class="btn tiny ghost" data-act="plSave" data-id="${opt.id}">Save</button>
+        <button class="btn tiny ghost danger" data-act="plDismiss" data-id="${opt.id}" title="Not for me">✕</button>
+      </div>
+    </div>
+  </article>`;
+}
+
+function renderPlannerBody() {
+  const status = $('#plStatus');
+  const grid = $('#plGrid');
+  const itin = $('#plItin');
+  const go = $('#plGo');
+  if (!grid) return;
+
+  const board = currentBoard();
+  const dates = board.dates.length ? board.dates : plannerDates();
+  const running = plRun && !plRun.done;
+
+  if (go) {
+    go.disabled = !!running;
+    go.innerHTML = running
+      ? '<span class="spin">◌</span> Searching…'
+      : boardHasLive(board) ? 'Reshape →' : 'Fill the weekend →';
+  }
+
+  if (status) {
+    if (running) {
+      status.innerHTML = `<span class="orb"></span><span>${esc(plRun.status)}</span>
+        <button class="btn tiny ghost" data-act="plStop">Stop</button>`;
+      status.hidden = false;
+    } else if (plRun?.error) {
+      status.innerHTML = `<span>${esc(plRun.error)}</span>
+        <button class="btn tiny ghost" data-act="plRefresh">↻ Try again</button>`;
+      status.hidden = false;
+    } else if (boardHasLive(board) && board.at) {
+      status.innerHTML = `<span>Live options · ${new Date(board.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+        <button class="btn tiny ghost" data-act="plRefresh">↻ Again</button>`;
+      status.hidden = false;
+    } else {
+      status.hidden = true;
+    }
+  }
+
+  const nDays = dates.length;
+  const heads = dates.map(date => {
+    const w = dayWeather(date);
+    const isToday = date === todayIso();
+    return `<header class="pl-day-head ${isToday ? 'today' : ''}">
+      <b>${esc(new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' }))}</b>
+      <span>${esc(fmtDate(date))}</span>
+      ${w ? `<span class="weather-chip">${esc(w.summary)} · ${w.high}°</span>` : ''}
+    </header>`;
+  }).join('');
+
+  const cellHtml = (date, s) => {
+    const cell = cellKey(date, s.id);
+    const all = board.options[cell] || [];
+    const lockedId = board.chosen[cell];
+    const open = plOpen.has(cell);
+    const shown = open ? all : all.slice(0, 2);
+    const more = all.length - shown.length;
+    return `<div class="pl-cell" data-cell="${esc(cell)}">
+      <div class="pl-cell-label">${esc(s.label)}</div>
+      <div class="pl-opts">${shown.map(o => optionCard(o, cell, lockedId)).join('')}</div>
+      ${all.length > 2 ? `<button class="pl-more" data-act="plMore" data-id="${esc(cell)}">${open ? 'Show less' : `+${more} more`}</button>` : ''}
+      ${!all.length ? `<div class="pl-empty">${running ? '<div class="skeleton pl-skel"></div>' : '—'}</div>` : ''}
+    </div>`;
+  };
+
+  grid.style.setProperty('--days', String(nDays));
+  grid.innerHTML = `
+    <div class="pl-cal-grid">
+      <div class="pl-corner"></div>
+      ${heads}
+      ${SLOTS.map(s => `
+        <div class="pl-rail-slot">${esc(s.label)}</div>
+        ${dates.map(date => cellHtml(date, s)).join('')}
+      `).join('')}
+    </div>
+    <div class="pl-stack">
+      ${dates.map((date, i) => {
+        const w = dayWeather(date);
+        return `<section class="pl-day rise" style="--i:${i}">
+          <header class="pl-day-head ${date === todayIso() ? 'today' : ''}">
+            <b>${esc(new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' }))}</b>
+            <span>${esc(fmtDate(date))}</span>
+            ${w ? `<span class="weather-chip">${esc(w.summary)} · ${w.high}°</span>` : ''}
+          </header>
+          ${SLOTS.map(s => cellHtml(date, s)).join('')}
+        </section>`;
+      }).join('')}
+    </div>
+  `;
+
+  const locked = chosenOptions(board);
+  if (itin) {
+    if (!locked.length) { itin.hidden = true; document.documentElement.classList.remove('has-itin'); }
+    else {
+      itin.hidden = false;
+      document.documentElement.classList.add('has-itin');
+      const span = `${fmtDay(locked[0].date)}${locked.length > 1 ? '–' + fmtDay(locked[locked.length - 1].date) : ''}`;
+      itin.innerHTML = `
+        <div class="pl-itin-copy"><b>${locked.length} locked</b> · ${esc(span)}</div>
+        <div class="pl-itin-actions">
+          <button class="btn tiny accent" data-act="plAddAll">Add all to Plans</button>
+          <button class="btn tiny ghost" data-act="plShareAll">Share</button>
+        </div>`;
+    }
+  }
+}
+
+VIEWS.plan = function renderPlanner() {
+  syncRangeFromRoute();
   const city = S.settings.city;
-  const prof = S.settings.profile || {};
-  const dates = mode === 'weekend' ? weekendDates() : [conciergeDate(mode)];
-
-  const heading = mode === 'weekend'
-    ? `What should I do <span class="aurora-text">this weekend</span>?`
-    : `What should I do <span class="aurora-text">${conciergeDate(mode) === todayIso() ? 'tonight' : fmtDay(conciergeDate(mode))}</span>?`;
-
+  const range = S.planner.range;
+  const dates = plannerDates();
+  const hint = PROMPT_HINTS[Math.floor(Date.now() / 60000) % PROMPT_HINTS.length];
+  const headings = {
+    tonight: `What should I do <span class="aurora-text">${dates[0] === todayIso() ? 'tonight' : fmtDay(dates[0])}</span>?`,
+    weekend: `Plan <span class="aurora-text">this weekend</span>`,
+    week: `Plan <span class="aurora-text">the week</span>`,
+  };
   const lede = city
-    ? mode === 'weekend'
-      ? `A real itinerary for ${esc(fmtDate(dates[0]))}–${esc(fmtDate(dates[dates.length - 1]))} in ${esc(city)}, built around your people and paced so the weekend feels designed.`
-      : `Live listings for ${esc(city)}, filtered through what you're into${prof.neighborhoods?.length ? `, near ${esc(prof.neighborhoods.slice(0, 2).join(' and '))}` : ''} — and matched to whoever you've been meaning to see.`
+    ? `Real options in ${esc(city)} — dinner, happy hour, shows, a workout — so you actually go out. Type what you feel; Orbit fills the calendar.`
     : `Add your city and Orbit can start finding real things to do.`;
 
+  ensureBoard();
+
   $('#view').innerHTML = `
-    <section class="cg-hero rise">
-      <h1>${heading}</h1>
+    <section class="cg-hero pl-hero rise">
+      <h1>${headings[range] || headings.weekend}</h1>
       <p class="cg-lede">${lede}</p>
 
-      <div class="cg-modes">
-        <button class="cg-mode ${mode === 'tonight' ? 'on' : ''}" data-act="cgMode" data-id="tonight">
-          <span class="cg-ico">☾</span>
-          <span><b>Tonight</b><span>or any night this week</span></span>
-        </button>
-        <button class="cg-mode ${mode === 'weekend' ? 'on' : ''}" data-act="cgMode" data-id="weekend">
-          <span class="cg-ico">✦</span>
-          <span><b>The weekend</b><span>a full Friday-to-Sunday plan</span></span>
-        </button>
+      <div class="pl-ranges">
+        <button class="pl-range ${range === 'tonight' ? 'on' : ''}" data-act="plRange" data-id="tonight">Tonight</button>
+        <button class="pl-range ${range === 'weekend' ? 'on' : ''}" data-act="plRange" data-id="weekend">This weekend</button>
+        <button class="pl-range ${range === 'week' ? 'on' : ''}" data-act="plRange" data-id="week">Next 7 days</button>
       </div>
 
-      <div class="cg-controls">
-        ${mode === 'tonight' ? `
-          <label class="ob-label" style="align-self:center">Night</label>
-          <input type="date" id="cgDate" value="${esc(conciergeDate(mode))}" min="${todayIso()}" max="${addDays(todayIso(), 21)}">
-        ` : `<span class="faint small" style="align-self:center">${esc(dates.map(fmtDay).join(' · '))}</span>`}
-        <input id="cgVibe" placeholder="Anything specific? “low key and walkable”, “impress a date”…" value="${esc(S.concierge.vibe || '')}">
-        <button class="btn accent" id="cgGo" data-act="cgGo">${currentPicks().length ? 'Find more' : 'Find something'} →</button>
-        ${weatherChip()}
-      </div>
-
-      <div class="cg-status" id="cgStatus" hidden></div>
+      <form class="pl-prompt" id="plForm">
+        ${range === 'tonight' ? `<input type="date" id="plDate" value="${esc(dates[0])}" min="${todayIso()}" max="${addDays(todayIso(), 21)}">` : ''}
+        <input id="plPrompt" placeholder="${esc(hint)}" value="${esc(S.planner.prompt || '')}" autocomplete="off">
+        <button class="btn accent" id="plGo" type="submit">${boardHasLive(currentBoard()) ? 'Reshape →' : 'Fill the weekend →'}</button>
+      </form>
+      <div class="cg-status" id="plStatus" hidden></div>
     </section>
 
-    <div class="cg-stream" id="cgStream"></div>
+    <div class="pl-cal" id="plGrid" style="--days:${dates.length}"></div>
+    <div class="pl-itin" id="plItin" hidden></div>
 
     ${city ? '' : `<div class="empty rise" style="margin-top:18px">
       Orbit needs to know where you are. <a href="#" data-act="goWelcome"><b>Set your city →</b></a>
     </div>`}
   `;
 
-  renderConciergeBody();
+  renderPlannerBody();
+  maybeAutoPlan();
+  if (city) {
+    fetchWeather(dates).then(weather => {
+      if (!weather) return;
+      S.concierge.weather = { city, at: Date.now(), days: weather };
+      persist();
+      renderPlannerBody();
+    });
+  }
 
-  $('#cgVibe')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); ACTIONS.cgGo(); }
+  $('#plForm')?.addEventListener('submit', e => {
+    e.preventDefault();
+    ACTIONS.plGo();
   });
-  $('#cgDate')?.addEventListener('change', e => {
+  $('#plDate')?.addEventListener('change', e => {
+    S.planner.pickedDate = e.target.value;
     S.concierge.pickedDate = e.target.value;
     persist();
-    VIEWS.tonight();
+    VIEWS.plan();
   });
 };
 
-VIEWS.weekend = VIEWS.tonight;
+VIEWS.tonight = VIEWS.plan;
+VIEWS.weekend = VIEWS.plan;
 
 // ---------- TODAY ----------
 function dueRow({ p, d }, i) {
@@ -1367,10 +1905,10 @@ function conciergeStrip() {
   const dow = new Date().getDay();
   const weekendish = dow === 5 || dow === 6 || dow === 4;
   const lead = weekendish
-    ? { mode: 'weekend', label: 'Plan my weekend', sub: 'Friday to Sunday, actually designed' }
+    ? { mode: 'weekend', label: 'Plan my weekend', sub: 'Friday to Sunday, pick from real options' }
     : { mode: 'tonight', label: hour >= 16 ? 'What should I do tonight?' : 'What should I do this evening?', sub: `Live in ${esc(S.settings.city || 'your city')}, matched to you` };
   const other = lead.mode === 'weekend'
-    ? { mode: 'tonight', label: 'Just tonight', sub: 'one evening, four options' }
+    ? { mode: 'tonight', label: 'Just tonight', sub: 'one evening, several ways to spend it' }
     : { mode: 'weekend', label: 'The whole weekend', sub: 'Friday to Sunday' };
 
   return `<div class="cg-modes" style="margin-top:24px">
@@ -2148,14 +2686,13 @@ VIEWS.connect = async function renderConnect() {
     `<a class="btn" href="#people">Add handles to people</a>`, 5);
 
   const customProxy = S.settings.integrations.proxyUrl || '';
-  const conciergeCard = connectCard('✦', 'The concierge', 'Live plans for tonight & the weekend', null,
-    `<b>Tonight</b> and <b>Weekend</b> search the live web for real shows, openings, and tables in
-     ${esc(S.settings.city || 'your city')} — then match them to your interests and to whoever you've
-     been meaning to see. Requests go through a small proxy that holds the model key, so nothing
-     sensitive touches this device.
+  const conciergeCard = connectCard('✦', 'The planner', 'A calendar of real things to do', null,
+    `<b>Plan</b> lays out tonight, the weekend, or the next seven days — dinner, happy hour, shows,
+     a workout — then lets you type what you feel and reshape the board. Requests go through a
+     small proxy that holds the model key, so nothing sensitive touches this device.
      <div style="margin-top:10px" class="faint small">Proxy: <code>${esc(customProxy || DEFAULT_PROXY_URL)}</code></div>
      <input id="cg-proxy" placeholder="Your own worker URL (optional)" value="${esc(customProxy)}">`,
-    `<a class="btn accent" href="#tonight">Try it →</a>
+    `<a class="btn accent" href="#plan">Open the planner →</a>
      <button class="btn" data-act="cgTestProxy">Test connection</button>
      <button class="btn ghost" data-act="cgSaveProxy">${customProxy ? 'Update' : 'Use my own'}</button>
      ${customProxy ? '<button class="btn ghost danger" data-act="cgClearProxy">Reset</button>' : ''}`, 1);
@@ -2971,8 +3508,9 @@ let palSel = 0;
 function paletteItems(q) {
   const items = [];
   const add = (icon, label, hint, fn) => items.push({ icon, label, hint, fn });
-  add('☾', 'What should I do tonight?', 'Concierge', () => ACTIONS.cgJump('tonight'));
-  add('✦', 'Plan my weekend', 'Concierge', () => ACTIONS.cgJump('weekend'));
+  add('☾', 'What should I do tonight?', 'Planner', () => ACTIONS.cgJump('tonight'));
+  add('✦', 'Plan my weekend', 'Planner', () => ACTIONS.cgJump('weekend'));
+  add('▦', 'Plan the week', 'Planner', () => ACTIONS.cgJump('week'));
   if (!q) {
     duePeople().slice(0, 3).forEach(({ p, d }) =>
       add(initials(p.name), `Reach out: ${p.name}`, `${d.overdue}d overdue`, () => openPersonDialog(p.id)));
@@ -2987,7 +3525,7 @@ function paletteItems(q) {
   add('◐', 'Toggle dark mode', 'Theme', toggleTheme);
   add('✦', 'Profile & settings', 'Setup', () => { ob = null; openWizard(); });
   if (syncCfg?.gistId) add('⟳', 'Sync now', 'Sync', () => { pushSync(); toast('Syncing…'); });
-  ['today', 'tonight', 'people', 'dating', 'ideas', 'plans', 'digest', 'connect'].forEach(v =>
+  ['today', 'plan', 'tonight', 'people', 'dating', 'ideas', 'plans', 'digest', 'connect'].forEach(v =>
     add('▸', `Go to ${v[0].toUpperCase() + v.slice(1)}`, 'Navigate', () => location.hash = '#' + v));
   activePeople().forEach(p =>
     add(initials(p.name), p.name, TIER_LABEL[p.tier], () => openPersonDialog(p.id)));
@@ -3057,7 +3595,7 @@ function openMoreSheet() {
   const sheet = $('#moreSheet');
   sheet.innerHTML = `
     <div class="sheet-list">
-      <a href="#weekend" data-close><span class="si">✦</span>Plan my weekend</a>
+      <a href="#plan" data-close><span class="si">✦</span>Plan</a>
       <a href="#plans" data-close><span class="si">◫</span>Plans</a>
       <a href="#ideas" data-close><span class="si">✧</span>Saved ideas</a>
       <a href="#review" data-close><span class="si">◈</span>Weekly review</a>
@@ -3122,36 +3660,112 @@ const ACTIONS = {
   vnSave(id) { applyTasteFeedback('venue', id, 'save'); save(); toast('Noted — more like this ✦'); },
   vnDismiss(id) { applyTasteFeedback('venue', id, 'dismiss'); save(); },
 
-  // ---------- concierge ----------
-  cgMode(mode) {
-    location.hash = mode === 'weekend' ? '#weekend' : '#tonight';
-  },
+  // ---------- concierge / planner ----------
+  cgMode(mode) { ACTIONS.plRange(mode === 'week' ? 'week' : mode === 'weekend' ? 'weekend' : 'tonight'); },
   cgJump(mode) {
-    location.hash = mode === 'weekend' ? '#weekend' : '#tonight';
-  },
-  cgGo() {
-    const vibe = ($('#cgVibe')?.value || '').trim();
-    S.concierge.vibe = vibe;
+    S.planner.range = mode === 'week' ? 'week' : mode === 'weekend' ? 'weekend' : 'tonight';
     persist();
-    const mode = conciergeMode();
-    const cached = S.concierge.runs[conciergeKey(mode, conciergeDate(mode), vibe)];
-    runConcierge({ mode, vibe, force: !!cached?.picks?.length });
+    location.hash = mode === 'weekend' ? '#weekend' : mode === 'week' ? '#plan' : '#tonight';
   },
-  cgRefresh() {
-    const mode = conciergeMode();
-    runConcierge({ mode, vibe: S.concierge.vibe || '', force: true });
+  cgGo() { ACTIONS.plGo(); },
+  cgRefresh() { ACTIONS.plRefresh(); },
+  cgStop() { ACTIONS.plStop(); },
+  cgShareAll() { ACTIONS.plShareAll(); },
+  plRange(id) {
+    S.planner.range = ['tonight', 'weekend', 'week'].includes(id) ? id : 'weekend';
+    persist();
+    if (route !== 'plan') location.hash = '#plan';
+    else VIEWS.plan();
   },
-  cgStop() {
+  plGo() {
+    const prompt = ($('#plPrompt')?.value || '').trim();
+    S.planner.prompt = prompt;
+    persist();
+    runPlanner({ force: true });
+  },
+  plRefresh() { runPlanner({ force: true }); },
+  plStop() {
     cgAbort?.abort();
-    cgRun = null;
-    renderConciergeBody();
+    plRun = null;
+    renderPlannerBody();
   },
-  cgShareAll() {
-    const mode = conciergeMode();
-    const picks = currentPicks();
-    shareItinerary(picks, mode === 'weekend'
-      ? `${S.settings.city} this weekend`
-      : `${fmtDay(conciergeDate(mode))} in ${S.settings.city}`);
+  plMore(cell) {
+    if (plOpen.has(cell)) plOpen.delete(cell);
+    else plOpen.add(cell);
+    renderPlannerBody();
+  },
+  plLock(id) {
+    const opt = findOption(id);
+    if (!opt) return;
+    const board = currentBoard();
+    const cell = cellKey(opt.date, opt.slot);
+    if (board.chosen[cell] === id) delete board.chosen[cell];
+    else board.chosen[cell] = id;
+    persist();
+    renderPlannerBody();
+  },
+  plDismiss(id) {
+    const opt = findOption(id);
+    if (!opt) return;
+    const board = currentBoard();
+    const cell = cellKey(opt.date, opt.slot);
+    board.options[cell] = (board.options[cell] || []).filter(o => o.id !== id);
+    if (board.chosen[cell] === id) delete board.chosen[cell];
+    if (opt.refId && (opt.refKind === 'event' || opt.refKind === 'venue')) {
+      applyTasteFeedback(opt.refKind, opt.refId, 'dismiss');
+    }
+    persist();
+    renderPlannerBody();
+  },
+  plSave(id) {
+    const pick = findOption(id);
+    if (!pick) return;
+    S.ideas.unshift({
+      id: uid(),
+      title: pick.title,
+      tags: [pick.kind, ...(pick.price ? [pick.price] : [])],
+      hood: pick.neighborhood || pick.venue || '',
+      cost: pick.price === 'free' ? 'free' : pick.price,
+      best: 'either',
+      notes: [pick.why, pick.tip, pick.url].filter(Boolean).join('\n'),
+      favorite: false,
+    });
+    persist();
+    toast('Saved to your ideas ✦');
+  },
+  plShareAll() {
+    const board = currentBoard();
+    const locked = chosenOptions(board);
+    const picks = locked.length ? locked : Object.values(board.options).flatMap(list => list.slice(0, 1));
+    const label = S.planner.range === 'tonight'
+      ? `${fmtDay(plannerDates()[0])} in ${S.settings.city}`
+      : `${S.settings.city} this ${S.planner.range === 'week' ? 'week' : 'weekend'}`;
+    shareItinerary(picks, label);
+  },
+  plAddAll() {
+    const board = currentBoard();
+    const locked = chosenOptions(board);
+    if (!locked.length) { toast('Lock a few options first'); return; }
+    let n = 0;
+    for (const opt of locked) {
+      if (S.plans.some(pl => pl.title === opt.title && pl.date === opt.date)) continue;
+      const buddy = personByFirstName(opt.bring);
+      S.plans.push({
+        id: uid(),
+        title: opt.title,
+        personIds: buddy ? [buddy.id] : [],
+        date: opt.date,
+        time: opt.startTime || slotTime(opt.slot),
+        place: [opt.venue, opt.neighborhood].filter(Boolean).join(', '),
+        notes: [opt.tip, opt.url].filter(Boolean).join('\n'),
+        status: 'upcoming',
+      });
+      n++;
+    }
+    persist();
+    renderPlannerBody();
+    toast(n ? `${n} ${n === 1 ? 'plan' : 'plans'} added ✦` : 'Those were already on your calendar');
+    if (n && !reduceMotion) confetti(16);
   },
   pickPlan(id) {
     const pick = findPick(id);
