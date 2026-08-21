@@ -1749,7 +1749,6 @@ function renderPlannerBody() {
     </div>`;
   };
 
-  grid.style.setProperty('--days', String(nDays));
   grid.innerHTML = `
     <div class="pl-cal-grid">
       <div class="pl-corner"></div>
@@ -1773,6 +1772,10 @@ function renderPlannerBody() {
       }).join('')}
     </div>
   `;
+  const calGrid = grid.querySelector('.pl-cal-grid');
+  if (calGrid) {
+    calGrid.style.gridTemplateColumns = `88px repeat(${nDays}, minmax(160px, 1fr))`;
+  }
 
   const locked = chosenOptions(board);
   if (itin) {
@@ -1827,7 +1830,7 @@ VIEWS.plan = function renderPlanner() {
       <div class="cg-status" id="plStatus" hidden></div>
     </section>
 
-    <div class="pl-cal" id="plGrid" style="--days:${dates.length}"></div>
+    <div class="pl-cal" id="plGrid"></div>
     <div class="pl-itin" id="plItin" hidden></div>
 
     ${city ? '' : `<div class="empty rise" style="margin-top:18px">
