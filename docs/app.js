@@ -1337,19 +1337,21 @@ function localOptions(dates) {
 }
 
 function currentBoard() {
-  return S.planner.boards[plannerKey()] || { dates: plannerDates(), at: 0, options: {}, chosen: {} };
+  return S.planner.boards[plannerKey()] || { dates: plannerDates(), at: 0, options: {}, chosen: {}, dismissed: [] };
 }
 
 function ensureBoard() {
   const key = plannerKey();
   const dates = plannerDates();
   let board = S.planner.boards[key];
-  if (!board) board = S.planner.boards[key] = { dates, at: 0, options: {}, chosen: {} };
+  if (!board) board = S.planner.boards[key] = { dates, at: 0, options: {}, chosen: {}, dismissed: [] };
+  board.dismissed = board.dismissed || [];
+  const blocked = new Set(board.dismissed);
   const local = localOptions(dates);
   for (const [cell, opts] of Object.entries(local)) {
     const have = board.options[cell] || [];
     const seen = new Set(have.map(optionDedupeKey));
-    board.options[cell] = have.concat(opts.filter(o => !seen.has(optionDedupeKey(o))));
+    board.options[cell] = have.concat(opts.filter(o => !seen.has(optionDedupeKey(o)) && !blocked.has(optionDedupeKey(o))));
   }
   return board;
 }
@@ -1393,8 +1395,10 @@ function mergeLiveOption(board, pick) {
   if (!board.dates.includes(pick.date)) pick.date = board.dates[0];
   const cell = cellKey(pick.date, pick.slot);
   if (board.chosen[cell]) return; // locked — don't overwrite
+  const key = optionDedupeKey(pick);
+  if ((board.dismissed || []).includes(key)) return;
   const have = board.options[cell] || [];
-  if (have.some(o => optionDedupeKey(o) === optionDedupeKey(pick))) return;
+  if (have.some(o => optionDedupeKey(o) === key)) return;
   board.options[cell] = have.concat(pick);
 }
 
@@ -1423,11 +1427,12 @@ async function runPlanner({ force = false } = {}) {
       board.options[cell] = (board.options[cell] || []).filter(o => o.source === 'yours');
     }
     const local = localOptions(dates);
+    const blocked = new Set(board.dismissed || []);
     for (const [cell, opts] of Object.entries(local)) {
       if (locked.has(cell)) continue;
       const have = board.options[cell] || [];
       const seen = new Set(have.map(optionDedupeKey));
-      board.options[cell] = have.concat(opts.filter(o => !seen.has(optionDedupeKey(o))));
+      board.options[cell] = have.concat(opts.filter(o => !seen.has(optionDedupeKey(o)) && !blocked.has(optionDedupeKey(o))));
     }
   }
 
@@ -3711,6 +3716,9 @@ const ACTIONS = {
     const cell = cellKey(opt.date, opt.slot);
     board.options[cell] = (board.options[cell] || []).filter(o => o.id !== id);
     if (board.chosen[cell] === id) delete board.chosen[cell];
+    board.dismissed = board.dismissed || [];
+    const key = optionDedupeKey(opt);
+    if (key && !board.dismissed.includes(key)) board.dismissed.push(key);
     if (opt.refId && (opt.refKind === 'event' || opt.refKind === 'venue')) {
       applyTasteFeedback(opt.refKind, opt.refId, 'dismiss');
     }
