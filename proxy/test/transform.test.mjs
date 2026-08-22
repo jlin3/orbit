@@ -151,6 +151,17 @@ test('prompt carries the profile, companions, and NDJSON contract', () => {
   assert.match(p, /2026-08-21, 2026-08-22/);
 });
 
+test('happening mode asks for sixteen listings across the week', () => {
+  const p = buildPrompt({
+    mode: 'happening',
+    city: 'New York',
+    dates: ['2026-08-22', '2026-08-23', '2026-08-24', '2026-08-25'],
+  });
+  assert.match(p, /Emit 16 lines/);
+  assert.match(p, /browseable/);
+  assert.match(p, /2026-08-22, 2026-08-23/);
+});
+
 test('tonight mode asks for four options and leaves bring null with no circle', () => {
   const p = buildPrompt({ mode: 'tonight', city: 'Austin', date: '2026-08-20', companions: [] });
   assert.match(p, /Emit 4 lines/);
