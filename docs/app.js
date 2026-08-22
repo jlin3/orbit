@@ -16,6 +16,7 @@ let lastRoute = null;
 let peopleFilter = 'active';
 let peopleSearch = '';
 let ideaFilter = null;
+let eventFilter = 'all';
 let sharedPayload = null; // set when the URL carries a shared itinerary
 
 const $ = s => document.querySelector(s);
@@ -1931,6 +1932,281 @@ function conciergeStrip() {
   </div>`;
 }
 
+// ---------- happening (Today explore) ----------
+function eventIsNew(item) {
+  const raw = item.firstSeen;
+  if (!raw) return false;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return daysBetween(raw, todayIso()) <= 1;
+  const t = Number(raw);
+  if (t > 1e12) return Date.now() - t < 48 * 3600e3;
+  if (t > 1e9) return Date.now() - t * 1000 < 48 * 3600e3;
+  return false;
+}
+
+function eventSourceCount(item) {
+  if (Array.isArray(item.sources) && item.sources.length) return item.sources.length;
+  return item.source ? 1 : 0;
+}
+
+function itemIsPlanned(title, date) {
+  const key = normTag(title);
+  if (!key) return false;
+  return (S.plans || []).some(pl =>
+    pl.status !== 'done' && normTag(pl.title) === key && (!date || pl.date === date));
+}
+
+function tasteTagHits(tags) {
+  const interests = new Set((S.settings.interests || []).map(normTag));
+  const weights = S.settings.tasteWeights || {};
+  const hits = [];
+  for (const t of tags || []) {
+    const k = normTag(t);
+    if (!k || k === 'free') continue;
+    const kind = TAG_KIND[k] || k;
+    const weightHit = weights[k] != null && weights[k] > 1.05;
+    const direct = interests.has(k) || interests.has(kind);
+    const fuzzy = [...interests].some(i => i.includes(k) || k.includes(i) || i.includes(kind) || kind.includes(i));
+    if (direct || fuzzy || weightHit) hits.push(t);
+  }
+  return [...new Set(hits)];
+}
+
+function eventWhy(item, hood) {
+  const hits = tasteTagHits(item.tags).slice(0, 2);
+  const hoodHit = hood && hoodBonusClient(hood) ? hood : null;
+  const nights = (S.settings.profile || {}).nights || [];
+  const nightHit = item.date && nights.includes(dayShort(item.date));
+  const bits = [...hits];
+  if (hoodHit) bits.push(hoodHit);
+  if (!bits.length && !nightHit) return '';
+  let line = bits.length ? `✦ ${bits.join(' + ')}` : '✦';
+  if (nightHit) {
+    const day = new Date(item.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+    line = bits.length ? `${line} — and ${day} is your night` : `✦ ${day} is your night`;
+  }
+  return line;
+}
+
+function eventDayLabel(iso) {
+  if (!iso) return { text: 'Sometime soon', weekend: false };
+  const today = todayIso();
+  const dow = new Date(iso + 'T12:00:00').getDay();
+  const weekend = dow === 0 || dow === 6;
+  if (iso === today) return { text: 'Tonight', weekend };
+  if (iso === addDays(today, 1)) return { text: 'Tomorrow', weekend };
+  const wd = new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+  const md = new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return { text: `${wd} · ${md}`, weekend };
+}
+
+function dayPlanContext(iso) {
+  if (!iso) return '';
+  const plans = (S.plans || []).filter(pl => pl.status !== 'done' && pl.date === iso);
+  if (!plans.length) return "you're free";
+  return plans.map(pl => {
+    const names = (pl.personIds || []).map(id => person(id)?.name?.split(' ')[0]).filter(Boolean);
+    const time = fmtTime(pl.time);
+    return [pl.title, names.length ? `with ${names.join(' & ')}` : '', time].filter(Boolean).join(' ');
+  }).join(' · ');
+}
+
+function topEventTags(events, n = 4) {
+  const skip = new Set(['free']);
+  const counts = {};
+  for (const e of events) {
+    for (const t of e.tags || []) {
+      const k = normTag(t);
+      if (!k || skip.has(k)) continue;
+      counts[t] = (counts[t] || 0) + 1;
+    }
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, n).map(([t]) => t);
+}
+
+function eventMatchesFilter(e) {
+  if (eventFilter === 'all') return true;
+  if (eventFilter === 'weekend') return e.date && weekendDates().includes(e.date);
+  if (eventFilter === 'free') {
+    return normTag(e.price) === 'free' || (e.tags || []).some(t => normTag(t) === 'free');
+  }
+  return (e.tags || []).some(t => t === eventFilter || normTag(t) === normTag(eventFilter));
+}
+
+function curatedEvents(pool) {
+  const filtered = pool.filter(eventMatchesFilter)
+    .sort((a, b) => scoreEventClient(b) - scoreEventClient(a));
+  const perDay = {};
+  const out = [];
+  for (const e of filtered) {
+    const key = e.date || '_';
+    perDay[key] = (perDay[key] || 0) + 1;
+    if (perDay[key] > 4) continue;
+    out.push(e);
+    if (out.length >= 18) break;
+  }
+  return out;
+}
+
+function groupEventsByDay(events) {
+  const groups = [];
+  const map = new Map();
+  for (const e of events) {
+    const key = e.date || '';
+    if (!map.has(key)) {
+      const g = { date: key, events: [] };
+      map.set(key, g);
+      groups.push(g);
+    }
+    map.get(key).events.push(e);
+  }
+  groups.sort((a, b) => {
+    if (!a.date) return 1;
+    if (!b.date) return -1;
+    return a.date.localeCompare(b.date);
+  });
+  return groups;
+}
+
+function eventCard(e, i) {
+  const kind = inferKind(e.tags);
+  const planned = itemIsPlanned(e.title, e.date);
+  const why = eventWhy(e, e.neighborhood);
+  const src = eventSourceCount(e);
+  const meta = [
+    e.venue,
+    e.neighborhood && e.neighborhood !== e.venue ? e.neighborhood : '',
+    e.price === 'free' ? 'free' : e.price,
+  ].filter(Boolean).map(esc).join(' · ');
+  const title = e.url
+    ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title)} ↗</a>`
+    : esc(e.title);
+  const tags = (e.tags || []).filter(t => normTag(t) !== 'free').slice(0, 4);
+
+  return `<article class="ev-card spot rise ${planned ? 'planned' : ''}" data-eid="${e.id}" style="--i:${i}">
+    <div class="ev-kind" title="${esc(kind)}">${KIND_ICON[kind] || '◍'}</div>
+    <div class="ev-body">
+      <h3 class="ev-title">${title}</h3>
+      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
+      ${why ? `<p class="ev-why">${esc(why)}</p>` : ''}
+      <div class="ev-tags">
+        ${eventIsNew(e) ? '<span class="chip fresh">new</span>' : ''}
+        ${src > 1 ? `<span class="chip">${src} sources</span>` : ''}
+        ${tags.map(t => `<span class="chip tag">${esc(t)}</span>`).join('')}
+      </div>
+      <div class="ev-actions">
+        ${planned
+          ? '<span class="chip ok">on your calendar</span>'
+          : `<button class="btn tiny accent" data-act="evPlan" data-id="${e.id}">Plan it →</button>`}
+        ${e.status === 'saved'
+          ? (planned ? '' : '<span class="chip ok">saved</span>')
+          : `<button class="btn tiny ghost" data-act="evSave" data-id="${e.id}" title="More like this">✦</button>`}
+        <button class="btn tiny ghost" data-act="evDismiss" data-id="${e.id}" title="Not for me">✕</button>
+      </div>
+    </div>
+  </article>`;
+}
+
+function venueCard(v, i) {
+  const inferred = inferKind(v.tags);
+  const kind = inferred !== 'home' ? inferred : (KIND_ICON[v.kind] ? v.kind : 'home');
+  const planned = itemIsPlanned(v.name);
+  const why = eventWhy(v, v.hood);
+  const buzz = venueBuzz(v);
+  const statusLabel = v.status === 'opening-soon' ? 'soon' : v.status;
+  const meta = [v.hood, v.availability].filter(Boolean).map(esc).join(' · ');
+  const title = v.url
+    ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.name)} ↗</a>`
+    : esc(v.name);
+
+  return `<article class="ev-card spot rise ${planned ? 'planned' : ''}" data-vid="${v.id}" style="--i:${i}">
+    <div class="ev-kind" title="${esc(kind)}">${KIND_ICON[kind] || '◍'}</div>
+    <div class="ev-body">
+      <h3 class="ev-title">${title}</h3>
+      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
+      ${why ? `<p class="ev-why">${esc(why)}</p>` : ''}
+      <div class="ev-tags">
+        ${statusLabel ? `<span class="chip fresh">${esc(statusLabel)}</span>` : ''}
+        ${buzz > 1 ? `<span class="chip">${buzz} sources</span>` : ''}
+        ${(v.tags || []).slice(0, 3).map(t => `<span class="chip tag">${esc(t)}</span>`).join('')}
+      </div>
+      <div class="ev-actions">
+        ${v.bookVia ? `<a class="btn tiny accent" href="${esc(v.bookVia)}" target="_blank" rel="noopener">Book</a>` : ''}
+        ${planned
+          ? '<span class="chip ok">on your calendar</span>'
+          : `<button class="btn tiny ${v.bookVia ? '' : 'accent'}" data-act="vnPlan" data-id="${v.id}">Plan it →</button>`}
+        ${v.flag === 'saved'
+          ? (planned ? '' : '<span class="chip ok">saved</span>')
+          : `<button class="btn tiny ghost" data-act="vnSave" data-id="${v.id}" title="More like this">✦</button>`}
+        <button class="btn tiny ghost" data-act="vnDismiss" data-id="${v.id}" title="Not for me">✕</button>
+      </div>
+    </div>
+  </article>`;
+}
+
+function happeningSection() {
+  const today = todayIso();
+  const pool = (S.events || [])
+    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today));
+  const events = curatedEvents(pool);
+  const groups = groupEventsByDay(events);
+  const hotVenues = (S.venues || [])
+    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
+    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
+    .slice(0, 6);
+  const tags = topEventTags(pool, 4);
+  const chips = [
+    ['all', 'All'],
+    ['weekend', 'This weekend'],
+    ['free', 'Free'],
+    ...tags.map(t => [t, t]),
+  ];
+
+  const eventBlock = !pool.length
+    ? `<div class="empty rise">Your daily agent fills this in each morning — events matched to your interests land here and in your inbox.</div>`
+    : !events.length
+      ? `<div class="empty rise">Nothing matches that filter — try <button class="btn tiny ghost" data-act="evFilter" data-id="all">All</button>.</div>`
+      : groups.map((g, gi) => {
+          const { text, weekend } = eventDayLabel(g.date);
+          const ctx = dayPlanContext(g.date);
+          return `<div class="ev-day">
+            <div class="ev-day-head">
+              <h3 class="${weekend ? 'aurora-text' : ''}">${esc(text)}</h3>
+              ${ctx ? `<span class="ev-day-ctx">${esc(ctx)}</span>` : ''}
+            </div>
+            <div class="ev-list">${g.events.map((e, i) => eventCard(e, gi * 4 + i)).join('')}</div>
+          </div>`;
+        }).join('');
+
+  return `
+    <div id="happening">
+      <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">ranked for your taste — Plan it locks a night, ✦ trains it</span></h2>
+      ${pool.length ? `<div class="ev-filters rise" style="--i:0">${chips.map(([id, label]) =>
+        `<button class="filter-chip ${eventFilter === id ? 'active' : ''}" data-act="evFilter" data-id="${esc(id)}">${esc(label)}</button>`
+      ).join('')}</div>` : ''}
+      ${eventBlock}
+      ${hotVenues.length ? `
+        <h2>New & buzzing <span class="sub">openings and hot spots from your sources</span></h2>
+        <div class="ev-list">${hotVenues.map((v, i) => venueCard(v, i)).join('')}</div>` : ''}
+    </div>`;
+}
+
+function rerenderHappening() {
+  const el = $('#happening');
+  if (!el) { VIEWS.today(); return; }
+  const y = scrollY;
+  el.outerHTML = happeningSection();
+  scrollTo({ top: y, behavior: 'instant' });
+}
+
+function dismissCard(el, done) {
+  let ran = false;
+  const go = () => { if (ran) return; ran = true; done(); };
+  if (!el || reduceMotion) { go(); return; }
+  el.classList.add('leaving');
+  el.addEventListener('animationend', go, { once: true });
+  setTimeout(go, 420);
+}
+
 VIEWS.today = function renderToday() {
   if (!S.settings.profile.completed) return renderLanding();
 
@@ -1939,14 +2215,6 @@ VIEWS.today = function renderToday() {
   const upcoming = (S.plans || [])
     .filter(pl => pl.status !== 'done' && pl.date >= today && pl.date <= addDays(today, 14))
     .sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
-  const events = (S.events || [])
-    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today))
-    .sort((a, b) => scoreEventClient(b) - scoreEventClient(a))
-    .slice(0, 12);
-  const hotVenues = (S.venues || [])
-    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
-    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
-    .slice(0, 6);
   const act = activePeople();
   const prof = S.settings.profile || {};
 
@@ -2001,6 +2269,7 @@ VIEWS.today = function renderToday() {
         </div>
         <div class="rise" style="--i:2">${constellationSvg()}</div>
       </div>
+      ${happeningSection()}
     `;
     return;
   }
@@ -2123,38 +2392,7 @@ VIEWS.today = function renderToday() {
       ? `<div class="plan-list">${upcoming.map((pl, i) => planRow(pl, i)).join('')}</div>`
       : `<div class="empty rise">Nothing planned. Pick someone above and hit <b>Plan</b>, or browse <a href="#ideas">Ideas</a>.</div>`}
 
-    <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">ranked for your taste — ✦ trains it</span></h2>
-    ${events.length
-      ? `<div class="event-list">${events.map((e, i) => `
-          <div class="event-row rise" style="--i:${i}">
-            <span class="date">${e.date ? fmtDate(e.date) : ''}</span>
-            <span>${e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title)}</a>` : esc(e.title)}${e.venue ? ` <span class="faint">@ ${esc(e.venue)}</span>` : ''}</span>
-            <span class="actions" style="margin-left:auto;display:inline-flex;gap:4px;flex-shrink:0">
-              ${e.status === 'saved'
-                ? '<span class="chip ok">saved</span>'
-                : `<button class="btn tiny ghost" data-act="evSave" data-id="${e.id}" title="More like this">✦</button>`}
-              <button class="btn tiny ghost" data-act="evDismiss" data-id="${e.id}" title="Not for me">✕</button>
-            </span>
-          </div>`).join('')}</div>`
-      : `<div class="empty rise">Your daily agent fills this in each morning — events matched to your interests land here and in your inbox.</div>`}
-
-    ${hotVenues.length ? `
-    <h2>New & buzzing <span class="sub">openings and hot spots from your sources</span></h2>
-    <div class="event-list">${hotVenues.map((v, i) => {
-      const b = venueBuzz(v);
-      return `
-        <div class="event-row rise" style="--i:${i}">
-          <span class="date">${v.status === 'opening-soon' ? 'soon' : esc(v.status)}</span>
-          <span>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.name)}</a>` : esc(v.name)}${v.hood ? ` <span class="faint">· ${esc(v.hood)}</span>` : ''}${b > 1 ? ` <span class="chip">${b} sources</span>` : ''}${v.availability ? ` <span class="faint">· ${esc(v.availability)}</span>` : ''}</span>
-          <span class="actions" style="margin-left:auto;display:inline-flex;gap:4px;flex-shrink:0">
-            ${v.bookVia ? `<a class="btn tiny accent" href="${esc(v.bookVia)}" target="_blank" rel="noopener">Book</a>` : ''}
-            ${v.flag === 'saved'
-              ? '<span class="chip ok">saved</span>'
-              : `<button class="btn tiny ghost" data-act="vnSave" data-id="${v.id}" title="More like this">✦</button>`}
-            <button class="btn tiny ghost" data-act="vnDismiss" data-id="${v.id}" title="Not for me">✕</button>
-          </span>
-        </div>`;
-    }).join('')}</div>` : ''}
+    ${happeningSection()}
   `;
 
   animateStats(onTrack);
@@ -3663,10 +3901,49 @@ function addToTriage(names) {
 
 const ACTIONS = {
   // ---------- taste feedback ----------
-  evSave(id) { applyTasteFeedback('event', id, 'save'); save(); toast('Noted — more like this ✦'); },
-  evDismiss(id) { applyTasteFeedback('event', id, 'dismiss'); save(); },
-  vnSave(id) { applyTasteFeedback('venue', id, 'save'); save(); toast('Noted — more like this ✦'); },
-  vnDismiss(id) { applyTasteFeedback('venue', id, 'dismiss'); save(); },
+  evSave(id) { applyTasteFeedback('event', id, 'save'); persist(); rerenderHappening(); toast('Noted — more like this ✦'); },
+  evDismiss(id) {
+    dismissCard(document.querySelector(`.ev-card[data-eid="${id}"]`), () => {
+      applyTasteFeedback('event', id, 'dismiss');
+      persist();
+      rerenderHappening();
+    });
+  },
+  evPlan(id) {
+    const e = (S.events || []).find(x => x.id === id);
+    if (!e) return;
+    applyTasteFeedback('event', id, 'planned');
+    persist();
+    openPlanDialog({
+      date: e.date || todayIso(),
+      time: e.startTime || e.time || '19:00',
+      title: e.title,
+      place: [e.venue, e.neighborhood].filter(Boolean).join(', '),
+      notes: e.url || '',
+    });
+  },
+  evFilter(id) { eventFilter = id || 'all'; rerenderHappening(); },
+  vnSave(id) { applyTasteFeedback('venue', id, 'save'); persist(); rerenderHappening(); toast('Noted — more like this ✦'); },
+  vnDismiss(id) {
+    dismissCard(document.querySelector(`.ev-card[data-vid="${id}"]`), () => {
+      applyTasteFeedback('venue', id, 'dismiss');
+      persist();
+      rerenderHappening();
+    });
+  },
+  vnPlan(id) {
+    const v = (S.venues || []).find(x => x.id === id);
+    if (!v) return;
+    applyTasteFeedback('venue', id, 'save');
+    persist();
+    openPlanDialog({
+      date: todayIso(),
+      time: '19:00',
+      title: v.name,
+      place: [v.name, v.hood].filter(Boolean).join(', '),
+      notes: [v.availability, v.bookVia || v.url].filter(Boolean).join('\n'),
+    });
+  },
 
   // ---------- concierge / planner ----------
   cgMode(mode) { ACTIONS.plRange(mode === 'week' ? 'week' : mode === 'weekend' ? 'weekend' : 'tonight'); },
