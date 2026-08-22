@@ -1284,8 +1284,9 @@ function localOptions(dates) {
     push(e.date, slot, {
       id: uid(), slot, date: e.date, title: e.title, venue: e.venue || '',
       neighborhood: e.neighborhood || '', startTime: e.startTime || e.time || slotTime(slot),
-      price: e.price || '', kind, why: '', tip: e.notes || '', url: e.url || null,
+      price: e.price || '', kind, why: eventWhy(e, e.neighborhood), tip: e.notes || '', url: e.url || null,
       bring: null, indoor: e.indoor !== false, source: 'yours', refKind: 'event', refId: e.id,
+      tags: e.tags || [kind],
     });
   }
 
@@ -1298,8 +1299,9 @@ function localOptions(dates) {
         opt: date => ({
           id: uid(), slot: KIND_SLOT[kind] || 'dinner', date, title: v.name, venue: v.name,
           neighborhood: v.hood || '', startTime: slotTime(KIND_SLOT[kind] || 'dinner'),
-          price: v.price || '', kind, why: '', tip: v.availability || '', url: v.url || v.bookVia || null,
+          price: v.price || '', kind, why: eventWhy(v, v.hood), tip: v.availability || '', url: v.url || v.bookVia || null,
           bring: null, indoor: true, source: 'yours', refKind: 'venue', refId: v.id,
+          tags: v.tags || [kind],
         }),
       };
     }),
@@ -1311,8 +1313,9 @@ function localOptions(dates) {
         opt: date => ({
           id: uid(), slot: KIND_SLOT[kind] || slotForItem(i.tags), date, title: i.title,
           venue: i.hood || '', neighborhood: i.hood || '', startTime: slotTime(KIND_SLOT[kind] || 'night'),
-          price: i.cost || '', kind, why: '', tip: i.notes || '', url: i.url || null,
+          price: i.cost || '', kind, why: eventWhy({ tags: i.tags, date }, i.hood), tip: i.notes || '', url: i.url || null,
           bring: null, indoor: true, source: 'yours', refKind: 'idea', refId: i.id,
+          tags: i.tags || [kind],
         }),
       };
     }),
@@ -1663,26 +1666,48 @@ function dayWeather(date) {
   return w.days.find(d => d.date === date) || null;
 }
 
-function optionCard(opt, cell, lockedId) {
+function optionWhy(opt) {
+  if (opt.why) return opt.why;
+  return eventWhy({ tags: opt.tags || [opt.kind], date: opt.date }, opt.neighborhood);
+}
+
+function optionCard(opt, cell, lockedId, i = 0) {
   const locked = lockedId === opt.id;
+  const planned = itemIsPlanned(opt.title, opt.date);
   const buddy = personByFirstName(opt.bring);
-  const meta = [opt.venue && opt.venue !== opt.title ? opt.venue : '', opt.neighborhood, opt.price === 'free' ? 'free' : opt.price]
-    .filter(Boolean).map(esc).join(' · ');
+  const why = optionWhy(opt);
+  const meta = [
+    opt.venue && opt.venue !== opt.title ? opt.venue : '',
+    opt.neighborhood && opt.neighborhood !== opt.venue ? opt.neighborhood : '',
+    opt.price === 'free' ? 'free' : opt.price,
+    opt.startTime ? fmtTime(opt.startTime) : '',
+    opt.indoor === false ? 'outdoors' : '',
+  ].filter(Boolean).map(esc).join(' · ');
   const title = opt.url
     ? `<a href="${esc(opt.url)}" target="_blank" rel="noopener">${esc(opt.title)} ↗</a>`
     : esc(opt.title);
-  return `<article class="pl-opt spot ${locked ? 'locked' : ''} ${opt.source === 'live' ? 'live' : 'yours'}" data-opt="${opt.id}">
-    <div class="pl-opt-kind" title="${esc(opt.kind)}">${KIND_ICON[opt.kind] || '◍'}</div>
-    <div class="pl-opt-body">
-      <h3 class="pl-opt-title">${title}</h3>
-      ${meta ? `<div class="pl-opt-meta">${meta}${opt.indoor === false ? ' · outdoors' : ''}${opt.startTime ? ` · ${esc(fmtTime(opt.startTime))}` : ''}</div>` : ''}
-      ${opt.why ? `<p class="pl-opt-why">${esc(opt.why)}</p>` : ''}
+  const tags = (opt.tags || []).filter(t => t && normTag(t) !== 'free' && normTag(t) !== opt.kind).slice(0, 3);
+
+  return `<article class="ev-card pl-opt spot ${locked ? 'locked' : ''} ${planned ? 'planned' : ''} ${opt.source === 'live' ? 'live' : 'yours'}" data-opt="${opt.id}" style="--i:${i}">
+    <div class="ev-kind" title="${esc(opt.kind)}">${KIND_ICON[opt.kind] || '◍'}</div>
+    <div class="ev-body">
+      <h3 class="ev-title">${title}</h3>
+      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
+      ${why ? `<p class="ev-why">${esc(why)}</p>` : ''}
       ${opt.tip ? `<div class="pl-opt-tip">${esc(opt.tip)}</div>` : ''}
       ${buddy ? `<div class="pick-bring"><span class="avatar" style="${avatarStyle(buddy)}">${initials(buddy.name)}</span>bring ${esc(buddy.name.split(' ')[0])}</div>` : ''}
-      <div class="pl-opt-actions">
-        <button class="btn tiny ${locked ? 'accent' : ''}" data-act="plLock" data-id="${opt.id}">${locked ? 'Locked' : 'Choose'}</button>
+      <div class="ev-tags">
+        ${opt.source === 'live' ? '<span class="chip fresh">live</span>' : '<span class="chip tag">yours</span>'}
+        ${opt.kind ? `<span class="chip tag">${esc(opt.kind)}</span>` : ''}
+        ${tags.map(t => `<span class="chip tag">${esc(t)}</span>`).join('')}
+      </div>
+      <div class="ev-actions">
+        ${planned
+          ? '<span class="chip ok">on your calendar</span>'
+          : `<button class="btn tiny accent" data-act="plPlan" data-id="${opt.id}">Plan it →</button>`}
+        <button class="btn tiny ${locked ? 'accent' : 'ghost'}" data-act="plLock" data-id="${opt.id}">${locked ? 'Locked' : 'Lock slot'}</button>
         <button class="btn tiny ghost" data-act="plSave" data-id="${opt.id}">Save</button>
-        <button class="btn tiny ghost danger" data-act="plDismiss" data-id="${opt.id}" title="Not for me">✕</button>
+        <button class="btn tiny ghost" data-act="plDismiss" data-id="${opt.id}" title="Not for me">✕</button>
       </div>
     </div>
   </article>`;
@@ -1724,59 +1749,40 @@ function renderPlannerBody() {
     }
   }
 
-  const nDays = dates.length;
-  const heads = dates.map(date => {
-    const w = dayWeather(date);
-    const isToday = date === todayIso();
-    return `<header class="pl-day-head ${isToday ? 'today' : ''}">
-      <b>${esc(new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' }))}</b>
-      <span>${esc(fmtDate(date))}</span>
-      ${w ? `<span class="weather-chip">${esc(w.summary)} · ${w.high}°</span>` : ''}
-    </header>`;
-  }).join('');
-
-  const cellHtml = (date, s) => {
+  const slotHtml = (date, s) => {
     const cell = cellKey(date, s.id);
     const all = board.options[cell] || [];
     const lockedId = board.chosen[cell];
     const open = plOpen.has(cell);
     const shown = open ? all : all.slice(0, 2);
     const more = all.length - shown.length;
-    return `<div class="pl-cell" data-cell="${esc(cell)}">
-      <div class="pl-cell-label">${esc(s.label)}</div>
-      <div class="pl-opts">${shown.map(o => optionCard(o, cell, lockedId)).join('')}</div>
+    if (!all.length && !running) return '';
+    return `<div class="pl-slot" data-cell="${esc(cell)}">
+      <div class="pl-slot-label">${esc(s.label)}</div>
+      <div class="pl-opts">${shown.map((o, i) => optionCard(o, cell, lockedId, i)).join('')}</div>
       ${all.length > 2 ? `<button class="pl-more" data-act="plMore" data-id="${esc(cell)}">${open ? 'Show less' : `+${more} more`}</button>` : ''}
-      ${!all.length ? `<div class="pl-empty">${running ? '<div class="skeleton pl-skel"></div>' : '—'}</div>` : ''}
+      ${!all.length && running ? '<div class="skeleton pl-skel"></div>' : ''}
     </div>`;
   };
 
-  grid.innerHTML = `
-    <div class="pl-cal-grid">
-      <div class="pl-corner"></div>
-      ${heads}
-      ${SLOTS.map(s => `
-        <div class="pl-rail-slot">${esc(s.label)}</div>
-        ${dates.map(date => cellHtml(date, s)).join('')}
-      `).join('')}
-    </div>
-    <div class="pl-stack">
-      ${dates.map((date, i) => {
-        const w = dayWeather(date);
-        return `<section class="pl-day rise" style="--i:${i}">
-          <header class="pl-day-head ${date === todayIso() ? 'today' : ''}">
-            <b>${esc(new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' }))}</b>
-            <span>${esc(fmtDate(date))}</span>
-            ${w ? `<span class="weather-chip">${esc(w.summary)} · ${w.high}°</span>` : ''}
-          </header>
-          ${SLOTS.map(s => cellHtml(date, s)).join('')}
-        </section>`;
-      }).join('')}
-    </div>
-  `;
-  const calGrid = grid.querySelector('.pl-cal-grid');
-  if (calGrid) {
-    calGrid.style.gridTemplateColumns = `88px repeat(${nDays}, minmax(160px, 1fr))`;
-  }
+  const days = dates.map((date, i) => {
+    const w = dayWeather(date);
+    const { text, weekend } = eventDayLabel(date);
+    const ctx = dayPlanContext(date);
+    const body = SLOTS.map(s => slotHtml(date, s)).join('');
+    return `<section class="pl-day rise" style="--i:${i}">
+      <header class="pl-day-head ${date === todayIso() ? 'today' : ''}">
+        <div class="pl-day-title">
+          <h3 class="${weekend ? 'aurora-text' : ''}">${esc(text)}</h3>
+          ${w ? `<span class="weather-chip">${esc(w.summary)} · ${w.high}°/${w.low}°</span>` : ''}
+        </div>
+        ${ctx ? `<span class="ev-day-ctx">${esc(ctx)}</span>` : ''}
+      </header>
+      ${body || `<div class="pl-empty-day">${running ? '<div class="skeleton pl-skel"></div>' : 'Nothing in this window yet — type a vibe and hit fill.'}</div>`}
+    </section>`;
+  }).join('');
+
+  grid.innerHTML = `<div class="pl-stack">${days}</div>`;
 
   const locked = chosenOptions(board);
   if (itin) {
@@ -1785,8 +1791,9 @@ function renderPlannerBody() {
       itin.hidden = false;
       document.documentElement.classList.add('has-itin');
       const span = `${fmtDay(locked[0].date)}${locked.length > 1 ? '–' + fmtDay(locked[locked.length - 1].date) : ''}`;
+      const names = locked.map(o => o.title).slice(0, 3).join(' · ');
       itin.innerHTML = `
-        <div class="pl-itin-copy"><b>${locked.length} locked</b> · ${esc(span)}</div>
+        <div class="pl-itin-copy"><b>${locked.length} locked</b> · ${esc(span)}<div class="small faint">${esc(names)}${locked.length > 3 ? '…' : ''}</div></div>
         <div class="pl-itin-actions">
           <button class="btn tiny accent" data-act="plAddAll">Add all to Plans</button>
           <button class="btn tiny ghost" data-act="plShareAll">Share</button>
@@ -1807,7 +1814,7 @@ VIEWS.plan = function renderPlanner() {
     week: `Plan <span class="aurora-text">the week</span>`,
   };
   const lede = city
-    ? `Real options in ${esc(city)} — dinner, happy hour, shows, a workout — so you actually go out. Type what you feel; Orbit fills the calendar.`
+    ? `A night you can actually keep. Real options in ${esc(city)}, ranked for you — lock a slot or tap Plan it and it's on the calendar.`
     : `Add your city and Orbit can start finding real things to do.`;
 
   ensureBoard();
@@ -3989,21 +3996,40 @@ const ACTIONS = {
     persist();
     renderPlannerBody();
   },
-  plDismiss(id) {
+  plPlan(id) {
     const opt = findOption(id);
     if (!opt) return;
     const board = currentBoard();
-    const cell = cellKey(opt.date, opt.slot);
-    board.options[cell] = (board.options[cell] || []).filter(o => o.id !== id);
-    if (board.chosen[cell] === id) delete board.chosen[cell];
-    board.dismissed = board.dismissed || [];
-    const key = optionDedupeKey(opt);
-    if (key && !board.dismissed.includes(key)) board.dismissed.push(key);
-    if (opt.refId && (opt.refKind === 'event' || opt.refKind === 'venue')) {
-      applyTasteFeedback(opt.refKind, opt.refId, 'dismiss');
-    }
+    board.chosen[cellKey(opt.date, opt.slot)] = id;
     persist();
-    renderPlannerBody();
+    const buddy = personByFirstName(opt.bring);
+    openPlanDialog({
+      personId: buddy?.id,
+      date: opt.date,
+      time: opt.startTime || slotTime(opt.slot),
+      title: opt.title,
+      place: [opt.venue, opt.neighborhood].filter(Boolean).join(', '),
+      notes: [opt.tip, opt.url].filter(Boolean).join('\n'),
+    });
+  },
+  plDismiss(id) {
+    const opt = findOption(id);
+    if (!opt) return;
+    const go = () => {
+      const board = currentBoard();
+      const cell = cellKey(opt.date, opt.slot);
+      board.options[cell] = (board.options[cell] || []).filter(o => o.id !== id);
+      if (board.chosen[cell] === id) delete board.chosen[cell];
+      board.dismissed = board.dismissed || [];
+      const key = optionDedupeKey(opt);
+      if (key && !board.dismissed.includes(key)) board.dismissed.push(key);
+      if (opt.refId && (opt.refKind === 'event' || opt.refKind === 'venue')) {
+        applyTasteFeedback(opt.refKind, opt.refId, 'dismiss');
+      }
+      persist();
+      renderPlannerBody();
+    };
+    dismissCard(document.querySelector(`.pl-opt[data-opt="${id}"]`), go);
   },
   plSave(id) {
     const pick = findOption(id);

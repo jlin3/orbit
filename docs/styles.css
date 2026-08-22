@@ -661,103 +661,58 @@ html.has-itin [data-route="weekend"] main { padding-bottom: calc(140px + var(--s
 .pl-prompt #plPrompt { flex: 1; min-width: 220px; }
 .pl-prompt input[type="date"] { width: auto; }
 
-/* Wrapper only. The day grid lives on .pl-cal-grid so this never
-   squishes the board into the 88px rail column. */
-.pl-cal { margin-top: 18px; overflow-x: auto; }
-.pl-cal-grid {
-  display: grid;
-  grid-template-columns: 88px repeat(3, minmax(160px, 1fr));
-  gap: 10px;
-  align-items: stretch;
-  min-width: min(100%, 720px);
-}
-.pl-stack { display: none; }
+.pl-cal { margin-top: 22px; }
+.pl-cal-grid, .pl-corner, .pl-rail-slot, .pl-cell-label { display: none; }
+.pl-stack { display: flex; flex-direction: column; gap: 34px; }
 
-.pl-corner { min-height: 0; }
 .pl-day-head {
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 12px 14px;
-  background: var(--surface);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
-  position: sticky; top: calc(68px + var(--sat)); z-index: 2;
-  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin: 0 0 16px; padding: 4px 0 10px;
+  border-bottom: 1px solid var(--line-soft);
 }
-.pl-day-head b {
-  font-family: var(--display); font-size: 16px; font-weight: 600; letter-spacing: -0.3px;
+.pl-day-title { display: flex; flex-direction: column; gap: 7px; }
+.pl-day-head h3 {
+  font-family: var(--display); font-size: 26px; font-weight: 600;
+  letter-spacing: -0.7px; margin: 0; line-height: 1.15;
 }
-.pl-day-head span { font-size: 12.5px; color: var(--ink-3); }
-.pl-day-head.today { border-color: var(--accent); box-shadow: var(--glow); }
-.pl-day-head .weather-chip { margin-top: 4px; align-self: flex-start; padding: 3px 9px; font-size: 11.5px; }
+.pl-day-head.today h3 { text-shadow: 0 0 24px oklch(from var(--accent) l c h / 0.35); }
+.pl-day-head .weather-chip { align-self: flex-start; padding: 3px 10px; font-size: 11.5px; }
 
-.pl-rail-slot {
-  display: flex; align-items: flex-start; padding-top: 16px;
-  font-size: 11.5px; font-weight: 600; letter-spacing: 0.4px;
-  color: var(--ink-3); text-transform: uppercase;
+.pl-slot { margin: 0 0 18px; }
+.pl-slot-label {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.85px;
+  text-transform: uppercase; color: var(--ink-3);
+  margin: 0 0 10px;
 }
-
-.pl-cell {
-  background: var(--surface);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
-  padding: 10px;
-  min-height: 148px;
-  display: flex; flex-direction: column; gap: 8px;
+.pl-opts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
 }
-.pl-cell-label { display: none; }
-.pl-opts { display: flex; flex-direction: column; gap: 8px; }
-.pl-empty {
-  flex: 1;
-  display: grid; place-items: center;
-  min-height: 88px;
-  color: var(--ink-3); font-size: 13px;
+.pl-empty-day {
+  color: var(--ink-3); font-size: 13.5px;
+  padding: 22px 16px;
   border: 1px dashed var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   background: oklch(from var(--surface-2) l c h / 0.4);
 }
-.pl-skel { height: 72px; }
+.pl-skel { height: 88px; }
 .pl-more {
-  align-self: flex-start;
-  font-family: var(--sans); font-size: 12px; font-weight: 600;
+  margin-top: 8px;
+  font-family: var(--sans); font-size: 12.5px; font-weight: 600;
   color: var(--accent-ink); background: none; border: none;
   cursor: pointer; padding: 0 2px;
 }
 .pl-more:hover { text-decoration: underline; }
 
-.pl-opt {
-  display: flex; gap: 10px; align-items: flex-start;
-  background: var(--surface-2);
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  padding: 10px 11px;
-  animation: pop-in 0.45s var(--spring) both;
-  transition: transform var(--med) var(--spring), border-color var(--fast) ease,
-    box-shadow var(--fast) ease;
-}
-.pl-opt:hover { transform: translateY(-2px); border-color: var(--line); }
 .pl-opt.locked {
   border-color: var(--accent);
   box-shadow: var(--glow);
-  background: var(--accent-soft);
 }
-.pl-opt-kind {
-  width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
-  display: grid; place-items: center; font-size: 14px;
-  background: var(--surface-3);
-}
-.pl-opt-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.pl-opt-title {
-  font-family: var(--display); font-size: 14px; font-weight: 600;
-  letter-spacing: -0.2px; line-height: 1.25;
-}
-.pl-opt-title a { color: inherit; text-decoration-color: var(--line); }
-.pl-opt-meta { font-size: 12px; color: var(--ink-3); }
-.pl-opt-why { font-size: 12.5px; color: var(--ink-2); text-wrap: pretty; margin: 0; }
 .pl-opt-tip {
-  font-size: 12px; color: var(--accent-ink);
-  background: var(--accent-soft); border-radius: 8px; padding: 5px 8px;
+  font-size: 12.5px; color: var(--accent-ink);
+  background: var(--accent-soft); border-radius: 9px; padding: 7px 11px;
 }
-.pl-opt-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
 
 .pl-itin {
   position: sticky; bottom: 16px; z-index: 40;
@@ -1380,23 +1335,8 @@ input[type="range"] {
   .cg-mode { min-width: 100%; }
   .cg-controls > input { min-width: 100%; }
   .cg-controls > .btn { width: 100%; justify-content: center; }
-  .pl-cal-grid { display: none; }
-  .pl-stack { display: flex; flex-direction: column; gap: 22px; }
-  .pl-day-head {
-    position: static; flex-direction: row; flex-wrap: wrap;
-    align-items: baseline; gap: 8px;
-  }
-  .pl-rail-slot { display: none; }
-  .pl-cell-label {
-    display: block; font-size: 11.5px; font-weight: 600;
-    letter-spacing: 0.3px; text-transform: uppercase; color: var(--ink-3);
-  }
-  .pl-opts {
-    flex-direction: row; overflow-x: auto; gap: 10px;
-    margin: 0 -4px; padding: 2px 4px 6px;
-    scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
-  }
-  .pl-opt { min-width: min(260px, 78vw); scroll-snap-align: start; }
+  .pl-day-head h3 { font-size: 22px; }
+  .pl-opts { grid-template-columns: 1fr; }
   .pl-prompt { flex-direction: column; align-items: stretch; }
   .pl-prompt input, .pl-prompt .btn { width: 100%; min-width: 0; }
   .pl-itin {
