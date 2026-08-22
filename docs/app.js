@@ -18,6 +18,10 @@ let peopleSearch = '';
 let ideaFilter = null;
 let eventFilter = 'all';
 let sharedPayload = null; // set when the URL carries a shared itinerary
+let feedRun = null; // { status, error, done } — Today happening auto-pull
+let feedAbort = null;
+let feedAutoKey = null;
+let feedGen = 0;
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -217,7 +221,7 @@ function mergeFeedIntoState(feed) {
       for (const f of ['venue', 'url', 'neighborhood', 'price', 'endDate']) if (raw[f] && !ex[f]) ex[f] = raw[f];
       if (raw.sources) ex.sources = raw.sources;
     } else {
-      S.events.push({ ...raw, id: uid(), status: 'new' });
+      S.events.push({ firstSeen: todayIso(), ...raw, id: uid(), status: raw.status || 'new' });
       changed = true;
     }
   }
@@ -242,21 +246,152 @@ function mergeFeedIntoState(feed) {
   return changed;
 }
 
-async function refreshCityFeed() {
+function upcomingEventCount() {
+  const today = todayIso();
+  return (S.events || []).filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today)).length;
+}
+
+async function refreshCityFeed({ force = false } = {}) {
   if (!S?.settings?.city) return false;
-  if (Date.now() - (S.meta.feedAt || 0) < 6 * 3600e3) return false;
+  if (!force && upcomingEventCount() && Date.now() - (S.meta.feedAt || 0) < 6 * 3600e3) return false;
   const city = S.settings.city.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   try {
     const res = await fetch(`${proxyUrl()}/feed?city=${city}`);
     if (!res.ok) return false;
     const feed = await res.json();
-    if (!feed.updatedAt) return false;
+    if (!feed.updatedAt && !(feed.events || []).length) return false;
     const changed = mergeFeedIntoState(feed);
-    S.meta.feedAt = Date.now();
-    persist();
+    if (feed.updatedAt || changed) {
+      S.meta.feedAt = Date.now();
+      persist();
+    }
     return changed;
   } catch {
     return false;
+  }
+}
+
+function pickToEvent(pick) {
+  return {
+    title: pick.title,
+    date: pick.date,
+    venue: pick.venue || '',
+    neighborhood: pick.neighborhood || '',
+    tags: [pick.kind, pick.price].filter(Boolean),
+    price: pick.price || '',
+    url: pick.url || null,
+    source: 'concierge',
+    firstSeen: todayIso(),
+  };
+}
+
+async function pullHappeningLive(signal) {
+  const dates = [...new Set([todayIso(), ...weekendDates()])].sort();
+  const prof = S.settings.profile || {};
+  const body = {
+    mode: 'weekend',
+    city: S.settings.city,
+    date: dates[0],
+    dates,
+    vibe: 'what’s happening this week — concerts, openings, food, outdoor, comedy',
+    weather: '',
+    profile: {
+      firstName: prof.firstName || '',
+      interests: S.settings.interests || [],
+      neighborhoods: prof.neighborhoods || [],
+      dateStyles: prof.dateStyles || [],
+      datingMode: prof.datingMode || '',
+    },
+    companions: companionsPayload(),
+    candidates: conciergeCandidates(dates),
+  };
+  if (S.settings.integrations?.provider) body.provider = S.settings.integrations.provider;
+
+  const res = await fetch(proxyUrl() + '/concierge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`The concierge is unreachable (${res.status}).`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      for (const line of frame.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        if (ev.type === 'status' && feedRun) {
+          feedRun.status = ev.text;
+          if (route === 'today') rerenderHappening();
+        } else if (ev.type === 'pick' && ev.pick) {
+          const pick = normalizePick(ev.pick, { mode: 'weekend', dates });
+          if (mergeFeedIntoState({ events: [pickToEvent(pick)] })) {
+            got++;
+            persist();
+            if (route === 'today') rerenderHappening();
+          }
+        } else if (ev.type === 'error' && feedRun) {
+          feedRun.error = ev.message;
+        }
+      }
+    }
+  }
+  return got;
+}
+
+async function ensureHappening({ force = false } = {}) {
+  const city = S.settings.city;
+  if (!city) return;
+  const key = `${city}|${todayIso()}`;
+  if (feedRun && !feedRun.done && !force) return;
+  if (!force && upcomingEventCount() >= 4 && Date.now() - (S.meta.feedAt || 0) < 6 * 3600e3) return;
+  if (!force && feedAutoKey === key && upcomingEventCount()) return;
+
+  const gen = ++feedGen;
+  feedAutoKey = key;
+  feedAbort?.abort();
+  feedAbort = new AbortController();
+  feedRun = { status: `Looking up what’s on in ${city}…`, error: null, done: false };
+  if (route === 'today') rerenderHappening();
+
+  try {
+    const fromFeed = await refreshCityFeed({ force: true });
+    if (gen !== feedGen) return;
+    if (fromFeed && route === 'today') rerenderHappening();
+
+    if (upcomingEventCount() < 6) {
+      if (feedRun) feedRun.status = 'Asking the concierge for live listings…';
+      if (route === 'today') rerenderHappening();
+      await pullHappeningLive(feedAbort.signal);
+      if (gen !== feedGen) return;
+    }
+
+    S.meta.feedAt = Date.now();
+    persist();
+    if (feedRun) {
+      feedRun.done = true;
+      if (!upcomingEventCount() && !feedRun.error) {
+        feedRun.error = 'Nothing came back yet — try again in a minute.';
+      }
+    }
+    if (route === 'today') rerenderHappening();
+  } catch (err) {
+    if (err.name === 'AbortError' || gen !== feedGen) return;
+    if (feedRun) {
+      feedRun.error = String(err.message || err);
+      feedRun.done = true;
+    }
+    if (route === 'today') rerenderHappening();
   }
 }
 
@@ -2168,9 +2303,17 @@ function happeningSection() {
     ...tags.map(t => [t, t]),
   ];
 
-  const eventBlock = !pool.length
-    ? `<div class="empty rise">Your daily agent fills this in each morning — events matched to your interests land here and in your inbox.</div>`
-    : !events.length
+  const loading = feedRun && !feedRun.done;
+  const pulling = !!(S.settings.city && !pool.length && !feedRun?.error && !feedRun?.done);
+  const eventBlock = pulling
+    ? happeningShimmer(feedRun?.status)
+    : !pool.length
+      ? `<div class="empty rise">
+          <span class="big">✦</span>
+          ${esc(feedRun?.error || 'Nothing on the board yet — the agent can try again.')}
+          <div style="margin-top:12px"><button class="btn tiny accent" data-act="evRefresh">Find events →</button></div>
+        </div>`
+      : !events.length
       ? `<div class="empty rise">Nothing matches that filter — try <button class="btn tiny ghost" data-act="evFilter" data-id="all">All</button>.</div>`
       : groups.map((g, gi) => {
           const { text, weekend } = eventDayLabel(g.date);
@@ -2190,11 +2333,37 @@ function happeningSection() {
       ${pool.length ? `<div class="ev-filters rise" style="--i:0">${chips.map(([id, label]) =>
         `<button class="filter-chip ${eventFilter === id ? 'active' : ''}" data-act="evFilter" data-id="${esc(id)}">${esc(label)}</button>`
       ).join('')}</div>` : ''}
+      ${loading && pool.length ? `<div class="ev-status"><span class="orb"></span><span>${esc(feedRun.status)}</span></div>` : ''}
       ${eventBlock}
       ${hotVenues.length ? `
         <h2>New & buzzing <span class="sub">openings and hot spots from your sources</span></h2>
         <div class="ev-list">${hotVenues.map((v, i) => venueCard(v, i)).join('')}</div>` : ''}
     </div>`;
+}
+
+function happeningShimmer(status) {
+  const copy = status || 'Your daily agent is pulling events matched to your taste…';
+  const cards = [0, 1, 2].map(i => `
+    <article class="ev-card ev-skel" style="--i:${i}">
+      <div class="ev-skel-shine"></div>
+      <div class="ev-kind ev-skel-box"></div>
+      <div class="ev-body">
+        <div class="ev-skel-line ev-skel-title"></div>
+        <div class="ev-skel-line" style="width:48%"></div>
+        <div class="ev-skel-line" style="width:86%"></div>
+        <div class="ev-tags">
+          <span class="ev-skel-chip"></span>
+          <span class="ev-skel-chip"></span>
+          <span class="ev-skel-chip"></span>
+        </div>
+      </div>
+    </article>`).join('');
+  return `
+    <div class="ev-status">
+      <span class="orb"></span>
+      <span>${esc(copy)}</span>
+    </div>
+    <div class="ev-list ev-list-skel">${cards}</div>`;
 }
 
 function rerenderHappening() {
@@ -2278,6 +2447,7 @@ VIEWS.today = function renderToday() {
       </div>
       ${happeningSection()}
     `;
+    queueMicrotask(() => ensureHappening());
     return;
   }
 
@@ -2403,6 +2573,7 @@ VIEWS.today = function renderToday() {
   `;
 
   animateStats(onTrack);
+  queueMicrotask(() => ensureHappening());
 };
 
 function animateStats(onTrack) {
@@ -3719,6 +3890,8 @@ function obSave() {
     datesPerMonth: d.datesPerMonth || null,
     custom: [...d.customGoals],
   };
+  S.meta.feedAt = 0;
+  feedAutoKey = null;
   persist();
 }
 
@@ -3930,6 +4103,10 @@ const ACTIONS = {
     });
   },
   evFilter(id) { eventFilter = id || 'all'; rerenderHappening(); },
+  evRefresh() {
+    feedAutoKey = null;
+    ensureHappening({ force: true });
+  },
   vnSave(id) { applyTasteFeedback('venue', id, 'save'); persist(); rerenderHappening(); toast('Noted — more like this ✦'); },
   vnDismiss(id) {
     dismissCard(document.querySelector(`.ev-card[data-vid="${id}"]`), () => {
@@ -4412,7 +4589,6 @@ $('#themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ?
   snapshotHistory();
   persist();
   initStarfield();
-  refreshCityFeed().then(changed => { if (changed && !location.hash.slice(1).startsWith('s=')) render(); });
 
   // A shared link arrives as #s=<token>. Decode before the first paint so the
   // recipient never sees someone else's Today view flash past.

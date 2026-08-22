@@ -1042,6 +1042,45 @@ html.has-itin [data-route="weekend"] main { padding-bottom: calc(140px + var(--s
   to { opacity: 0; transform: translateX(36px) scale(0.96); filter: blur(4px); }
 }
 
+.ev-status {
+  display: flex; align-items: center; gap: 11px;
+  margin: 2px 0 14px;
+  font-size: 13.5px; color: var(--ink-2);
+}
+.ev-status .orb {
+  width: 16px; height: 16px; border-radius: 99px; flex-shrink: 0;
+  background: conic-gradient(from var(--aurora-angle), var(--aurora-1), var(--aurora-2), var(--aurora-3), var(--aurora-1));
+  animation: aurora-spin 1.6s linear infinite;
+  box-shadow: var(--glow);
+}
+.ev-card.ev-skel {
+  position: relative;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ev-card.ev-skel:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--line-soft); }
+.ev-skel-shine {
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  background-size: 200% 100%;
+  animation: ev-shimmer 2s linear infinite;
+  pointer-events: none;
+}
+@keyframes ev-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.ev-skel-box { background: var(--surface-3); }
+.ev-skel-line {
+  height: 11px; border-radius: 99px;
+  background: var(--surface-3); width: 100%;
+}
+.ev-skel-title { height: 16px; width: 62%; margin: 4px 0 2px; }
+.ev-skel-chip {
+  display: inline-block; width: 52px; height: 20px;
+  border-radius: 99px; background: var(--surface-3);
+}
+
 /* ---------- people ---------- */
 .people-list { display: flex; flex-direction: column; gap: 8px; }
 .person-row {
