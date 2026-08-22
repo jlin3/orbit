@@ -76,6 +76,10 @@ function weekendDates() {
   return [fri, addDays(fri, 1), addDays(fri, 2)];
 }
 
+function happeningDates(n = 8) {
+  return Array.from({ length: n }, (_, i) => addDays(todayIso(), i));
+}
+
 // ---------- persistence (local server ⇄ browser storage) ----------
 const LS_STATE = 'orbit-state';
 
@@ -218,7 +222,7 @@ function mergeFeedIntoState(feed) {
     const ex = S.events.find(e => normTag(e.title) + '|' + (e.date || '') === key);
     if (ex) {
       ex.tags = [...new Set([...(ex.tags || []), ...(raw.tags || [])])];
-      for (const f of ['venue', 'url', 'neighborhood', 'price', 'endDate']) if (raw[f] && !ex[f]) ex[f] = raw[f];
+      for (const f of ['venue', 'url', 'neighborhood', 'price', 'endDate', 'why', 'startTime']) if (raw[f] && !ex[f]) ex[f] = raw[f];
       if (raw.sources) ex.sources = raw.sources;
     } else {
       S.events.push({ firstSeen: todayIso(), ...raw, id: uid(), status: raw.status || 'new' });
@@ -277,23 +281,31 @@ function pickToEvent(pick) {
     date: pick.date,
     venue: pick.venue || '',
     neighborhood: pick.neighborhood || '',
-    tags: [pick.kind, pick.price].filter(Boolean),
+    tags: [...new Set([pick.kind, pick.price].filter(Boolean))],
     price: pick.price || '',
     url: pick.url || null,
+    why: pick.why || '',
+    startTime: pick.startTime || '',
     source: 'concierge',
     firstSeen: todayIso(),
   };
 }
 
-async function pullHappeningLive(signal) {
-  const dates = [...new Set([todayIso(), ...weekendDates()])].sort();
+function happeningVibe() {
+  const interests = (S.settings.interests || []).slice(0, 6).join(', ');
+  return interests
+    ? `what’s on this week — lots of options across ${interests}, plus a few surprises`
+    : 'what’s happening this week — concerts, openings, food, outdoor, comedy, film, nightlife — lots of real options';
+}
+
+async function pullHappeningWindow({ mode, dates, vibe, signal }) {
   const prof = S.settings.profile || {};
   const body = {
-    mode: 'weekend',
+    mode,
     city: S.settings.city,
     date: dates[0],
     dates,
-    vibe: 'what’s happening this week — concerts, openings, food, outdoor, comedy',
+    vibe,
     weather: '',
     profile: {
       firstName: prof.firstName || '',
@@ -332,13 +344,13 @@ async function pullHappeningLive(signal) {
         try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
         if (ev.type === 'status' && feedRun) {
           feedRun.status = ev.text;
-          if (route === 'today') rerenderHappening();
+          if (route === 'today') paintHappeningStatus();
         } else if (ev.type === 'pick' && ev.pick) {
-          const pick = normalizePick(ev.pick, { mode: 'weekend', dates });
+          const pick = normalizePick(ev.pick, { mode, dates });
           if (mergeFeedIntoState({ events: [pickToEvent(pick)] })) {
             got++;
             persist();
-            if (route === 'today') rerenderHappening();
+            if (route === 'today') scheduleHappeningPaint();
           }
         } else if (ev.type === 'error' && feedRun) {
           feedRun.error = ev.message;
@@ -349,29 +361,56 @@ async function pullHappeningLive(signal) {
   return got;
 }
 
+async function pullHappeningLive(signal) {
+  const week = happeningDates(8);
+  const vibe = happeningVibe();
+  let got = await pullHappeningWindow({ mode: 'happening', dates: week, vibe, signal });
+  if (got >= 10 || signal.aborted) return got;
+
+  const used = new Set(week.slice(0, 1));
+  const tonight = [todayIso()];
+  got += await pullHappeningWindow({
+    mode: 'tonight',
+    dates: tonight,
+    vibe: 'several ways to spend tonight — shows, food, outdoors, something unexpected',
+    signal,
+  });
+  tonight.forEach(d => used.add(d));
+  if (signal.aborted) return got;
+
+  const weekend = weekendDates().filter(d => !used.has(d) || weekendDates().length <= 2);
+  got += await pullHappeningWindow({
+    mode: 'weekend',
+    dates: weekend.length ? weekend : weekendDates(),
+    vibe: 'the weekend — music, food, outdoor, comedy, something worth planning around',
+    signal,
+  });
+  return got;
+}
+
 async function ensureHappening({ force = false } = {}) {
   const city = S.settings.city;
   if (!city) return;
   const key = `${city}|${todayIso()}`;
   if (feedRun && !feedRun.done && !force) return;
-  if (!force && upcomingEventCount() >= 4 && Date.now() - (S.meta.feedAt || 0) < 6 * 3600e3) return;
-  if (!force && feedAutoKey === key && upcomingEventCount()) return;
+  if (!force && upcomingEventCount() >= 14 && Date.now() - (S.meta.feedAt || 0) < 6 * 3600e3) return;
+  if (!force && feedAutoKey === key && upcomingEventCount() >= 12) return;
 
   const gen = ++feedGen;
   feedAutoKey = key;
   feedAbort?.abort();
   feedAbort = new AbortController();
   feedRun = { status: `Looking up what’s on in ${city}…`, error: null, done: false };
-  if (route === 'today') rerenderHappening();
+  if (route === 'today') paintHappening();
 
   try {
     const fromFeed = await refreshCityFeed({ force: true });
     if (gen !== feedGen) return;
-    if (fromFeed && route === 'today') rerenderHappening();
+    if (fromFeed && route === 'today') paintHappening();
 
-    if (upcomingEventCount() < 6) {
+    if (upcomingEventCount() < 14) {
       if (feedRun) feedRun.status = 'Asking the concierge for live listings…';
-      if (route === 'today') rerenderHappening();
+      if (route === 'today') paintHappeningStatus();
       await pullHappeningLive(feedAbort.signal);
       if (gen !== feedGen) return;
     }
@@ -384,14 +423,14 @@ async function ensureHappening({ force = false } = {}) {
         feedRun.error = 'Nothing came back yet — try again in a minute.';
       }
     }
-    if (route === 'today') rerenderHappening();
+    if (route === 'today') paintHappening();
   } catch (err) {
     if (err.name === 'AbortError' || gen !== feedGen) return;
     if (feedRun) {
       feedRun.error = String(err.message || err);
       feedRun.done = true;
     }
-    if (route === 'today') rerenderHappening();
+    if (route === 'today') paintHappening();
   }
 }
 
@@ -2120,7 +2159,7 @@ function eventWhy(item, hood) {
   const nightHit = item.date && nights.includes(dayShort(item.date));
   const bits = [...hits];
   if (hoodHit) bits.push(hoodHit);
-  if (!bits.length && !nightHit) return '';
+  if (!bits.length && !nightHit) return item.why || '';
   let line = bits.length ? `✦ ${bits.join(' + ')}` : '✦';
   if (nightHit) {
     const day = new Date(item.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' });
@@ -2182,9 +2221,9 @@ function curatedEvents(pool) {
   for (const e of filtered) {
     const key = e.date || '_';
     perDay[key] = (perDay[key] || 0) + 1;
-    if (perDay[key] > 4) continue;
+    if (perDay[key] > 8) continue;
     out.push(e);
-    if (out.length >= 18) break;
+    if (out.length >= 40) break;
   }
   return out;
 }
@@ -2209,7 +2248,7 @@ function groupEventsByDay(events) {
   return groups;
 }
 
-function eventCard(e, i) {
+function eventCard(e, i, { fresh = false, rise = false } = {}) {
   const kind = inferKind(e.tags);
   const planned = itemIsPlanned(e.title, e.date);
   const why = eventWhy(e, e.neighborhood);
@@ -2223,8 +2262,9 @@ function eventCard(e, i) {
     ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title)} ↗</a>`
     : esc(e.title);
   const tags = (e.tags || []).filter(t => normTag(t) !== 'free').slice(0, 4);
+  const motion = [rise ? 'rise' : '', fresh ? 'ev-arrive' : ''].filter(Boolean).join(' ');
 
-  return `<article class="ev-card spot rise ${planned ? 'planned' : ''}" data-eid="${e.id}" style="--i:${i}">
+  return `<article class="ev-card spot ${motion} ${planned ? 'planned' : ''}" data-eid="${e.id}" style="--i:${i}">
     <div class="ev-kind" title="${esc(kind)}">${KIND_ICON[kind] || '◍'}</div>
     <div class="ev-body">
       <h3 class="ev-title">${title}</h3>
@@ -2285,65 +2325,31 @@ function venueCard(v, i) {
   </article>`;
 }
 
-function happeningSection() {
+function happeningPool() {
   const today = todayIso();
-  const pool = (S.events || [])
-    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today));
-  const events = curatedEvents(pool);
-  const groups = groupEventsByDay(events);
-  const hotVenues = (S.venues || [])
-    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
-    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
-    .slice(0, 6);
-  const tags = topEventTags(pool, 4);
-  const chips = [
+  return (S.events || []).filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today));
+}
+
+function happeningVenues() {
+  const all = (S.venues || []).filter(v => v.flag !== 'dismissed');
+  const hot = all.filter(v => ['opening-soon', 'new', 'hot'].includes(v.status));
+  const rest = all.filter(v => !['opening-soon', 'new', 'hot'].includes(v.status));
+  const byScore = list => list.sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a));
+  return [...byScore(hot), ...byScore(rest)].slice(0, 12);
+}
+
+function happeningFilterChips(pool) {
+  const tags = topEventTags(pool, 6);
+  return [
     ['all', 'All'],
     ['weekend', 'This weekend'],
     ['free', 'Free'],
     ...tags.map(t => [t, t]),
   ];
-
-  const loading = feedRun && !feedRun.done;
-  const pulling = !!(S.settings.city && !pool.length && !feedRun?.error && !feedRun?.done);
-  const eventBlock = pulling
-    ? happeningShimmer(feedRun?.status)
-    : !pool.length
-      ? `<div class="empty rise">
-          <span class="big">✦</span>
-          ${esc(feedRun?.error || 'Nothing on the board yet — the agent can try again.')}
-          <div style="margin-top:12px"><button class="btn tiny accent" data-act="evRefresh">Find events →</button></div>
-        </div>`
-      : !events.length
-      ? `<div class="empty rise">Nothing matches that filter — try <button class="btn tiny ghost" data-act="evFilter" data-id="all">All</button>.</div>`
-      : groups.map((g, gi) => {
-          const { text, weekend } = eventDayLabel(g.date);
-          const ctx = dayPlanContext(g.date);
-          return `<div class="ev-day">
-            <div class="ev-day-head">
-              <h3 class="${weekend ? 'aurora-text' : ''}">${esc(text)}</h3>
-              ${ctx ? `<span class="ev-day-ctx">${esc(ctx)}</span>` : ''}
-            </div>
-            <div class="ev-list">${g.events.map((e, i) => eventCard(e, gi * 4 + i)).join('')}</div>
-          </div>`;
-        }).join('');
-
-  return `
-    <div id="happening">
-      <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">ranked for your taste — Plan it locks a night, ✦ trains it</span></h2>
-      ${pool.length ? `<div class="ev-filters rise" style="--i:0">${chips.map(([id, label]) =>
-        `<button class="filter-chip ${eventFilter === id ? 'active' : ''}" data-act="evFilter" data-id="${esc(id)}">${esc(label)}</button>`
-      ).join('')}</div>` : ''}
-      ${loading && pool.length ? `<div class="ev-status"><span class="orb"></span><span>${esc(feedRun.status)}</span></div>` : ''}
-      ${eventBlock}
-      ${hotVenues.length ? `
-        <h2>New & buzzing <span class="sub">openings and hot spots from your sources</span></h2>
-        <div class="ev-list">${hotVenues.map((v, i) => venueCard(v, i)).join('')}</div>` : ''}
-    </div>`;
 }
 
-function happeningShimmer(status) {
-  const copy = status || 'Your daily agent is pulling events matched to your taste…';
-  const cards = [0, 1, 2].map(i => `
+function happeningShimmer() {
+  return [0, 1, 2].map(i => `
     <article class="ev-card ev-skel" style="--i:${i}">
       <div class="ev-skel-shine"></div>
       <div class="ev-kind ev-skel-box"></div>
@@ -2358,20 +2364,214 @@ function happeningShimmer(status) {
         </div>
       </div>
     </article>`).join('');
-  return `
-    <div class="ev-status">
-      <span class="orb"></span>
-      <span>${esc(copy)}</span>
+}
+
+function happeningIdeas() {
+  let list = (S.ideas || []).filter(ideaFitsCity);
+  if (eventFilter === 'free') list = list.filter(i => normTag(i.cost) === 'free' || (i.tags || []).some(t => normTag(t) === 'free'));
+  else if (eventFilter !== 'all' && eventFilter !== 'weekend') {
+    list = list.filter(i => (i.tags || []).some(t => t === eventFilter || normTag(t) === normTag(eventFilter)));
+  }
+  return list.slice(0, 10);
+}
+
+function happeningIdeaCard(idea, i) {
+  const kind = inferKind(idea.tags);
+  const planned = itemIsPlanned(idea.title);
+  const why = eventWhy(idea, idea.hood);
+  const meta = [idea.hood, idea.cost].filter(Boolean).map(esc).join(' · ');
+  return `<article class="ev-card spot" data-iid="${idea.id}">
+    <div class="ev-kind" title="${esc(kind)}">${KIND_ICON[kind] || '◍'}</div>
+    <div class="ev-body">
+      <h3 class="ev-title">${esc(idea.title)}</h3>
+      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
+      ${why ? `<p class="ev-why">${esc(why)}</p>` : idea.notes ? `<p class="ev-why">${esc(idea.notes)}</p>` : ''}
+      <div class="ev-tags">${(idea.tags || []).slice(0, 4).map(t => `<span class="chip tag">${esc(t)}</span>`).join('')}</div>
+      <div class="ev-actions">
+        ${planned
+          ? '<span class="chip ok">on your calendar</span>'
+          : `<button class="btn tiny accent" data-act="hiPlan" data-id="${idea.id}">Plan it →</button>`}
+      </div>
     </div>
-    <div class="ev-list ev-list-skel">${cards}</div>`;
+  </article>`;
+}
+
+function happeningBoardHtml({ rise = false, seen = new Set() } = {}) {
+  const pool = happeningPool();
+  const events = curatedEvents(pool);
+  const groups = groupEventsByDay(events);
+  const pulling = !!(S.settings.city && !pool.length && !feedRun?.error && !feedRun?.done);
+  if (pulling) return `<div class="ev-list ev-list-skel">${happeningShimmer()}</div>`;
+  if (!pool.length) {
+    return `<div class="empty">
+      <span class="big">✦</span>
+      ${esc(feedRun?.error || 'Nothing on the board yet — the agent can try again.')}
+      <div style="margin-top:12px"><button class="btn tiny accent" data-act="evRefresh">Find events →</button></div>
+    </div>`;
+  }
+  if (!events.length) {
+    return `<div class="empty">Nothing matches that filter — try <button class="btn tiny ghost" data-act="evFilter" data-id="all">All</button>.</div>`;
+  }
+  return groups.map((g, gi) => {
+    const { text, weekend } = eventDayLabel(g.date);
+    const ctx = dayPlanContext(g.date);
+    return `<div class="ev-day" data-day="${esc(g.date || 'soon')}">
+      <div class="ev-day-head">
+        <h3 class="${weekend ? 'aurora-text' : ''}">${esc(text)}</h3>
+        ${ctx ? `<span class="ev-day-ctx">${esc(ctx)}</span>` : ''}
+      </div>
+      <div class="ev-list">${g.events.map((e, i) => eventCard(e, gi * 8 + i, {
+        rise,
+        fresh: seen.size ? !seen.has(e.id) : false,
+      })).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
+function happeningIdeasHtml() {
+  const ideas = happeningIdeas();
+  if (!ideas.length) return '';
+  return `<div class="ev-day" data-day="anytime">
+    <div class="ev-day-head">
+      <h3>Anytime this week</h3>
+      <span class="ev-day-ctx">standing favorites you can lock in</span>
+    </div>
+    <div class="ev-list">${ideas.map((idea, i) => happeningIdeaCard(idea, i)).join('')}</div>
+  </div>`;
+}
+
+function happeningVenuesHtml() {
+  const hotVenues = happeningVenues();
+  if (!hotVenues.length) return '';
+  return `
+    <h2>New & buzzing <span class="sub">openings and hot spots from your sources</span></h2>
+    <div class="ev-list">${hotVenues.map((v, i) => venueCard(v, i)).join('')}</div>`;
+}
+
+function happeningSection() {
+  const pool = happeningPool();
+  const chips = happeningFilterChips(pool);
+  const loading = feedRun && !feedRun.done;
+  return `
+    <div id="happening">
+      <h2>Happening in ${esc(S.settings.city || 'your city')} <span class="sub">ranked for your taste — Plan it locks a night, ✦ trains it</span></h2>
+      <div id="happening-filters" class="ev-filters" ${pool.length ? '' : 'hidden'}>${pool.length ? chips.map(([id, label]) =>
+        `<button class="filter-chip ${eventFilter === id ? 'active' : ''}" data-act="evFilter" data-id="${esc(id)}">${esc(label)}</button>`
+      ).join('') : ''}</div>
+      <div id="happening-status" class="ev-status" ${loading ? '' : 'hidden'}>${loading
+        ? `<span class="orb"></span><span data-ev-status-text>${esc(feedRun.status)}</span>`
+        : ''}</div>
+      <div id="happening-board">${happeningBoardHtml({ rise: true })}</div>
+      <div id="happening-ideas">${happeningIdeasHtml()}</div>
+      <div id="happening-venues">${happeningVenuesHtml()}</div>
+    </div>`;
+}
+
+function paintHappeningStatus() {
+  const el = $('#happening-status');
+  if (!el) return;
+  const loading = feedRun && !feedRun.done;
+  const emptyErr = !!(feedRun?.done && feedRun.error && !happeningPool().length);
+  if (loading) {
+    const text = feedRun.status || 'Pulling what’s on…';
+    const label = el.querySelector('[data-ev-status-text]');
+    el.hidden = false;
+    if (label && el.querySelector('.orb')) {
+      if (label.textContent !== text) label.textContent = text;
+      return;
+    }
+    el.innerHTML = `<span class="orb"></span><span data-ev-status-text>${esc(text)}</span>`;
+    return;
+  }
+  if (emptyErr) {
+    el.hidden = false;
+    el.innerHTML = `<span data-ev-status-text>${esc(feedRun.error)}</span>`;
+    return;
+  }
+  el.hidden = true;
+  el.innerHTML = '';
+}
+
+function paintHappeningFilters() {
+  const host = $('#happening-filters');
+  if (!host) return;
+  const pool = happeningPool();
+  if (!pool.length) {
+    host.hidden = true;
+    host.innerHTML = '';
+    host.dataset.fp = '';
+    return;
+  }
+  const chips = happeningFilterChips(pool);
+  const fp = chips.map(c => c[0]).join('|') + '#' + eventFilter;
+  if (host.dataset.fp === fp) return;
+  host.dataset.fp = fp;
+  host.hidden = false;
+  host.innerHTML = chips.map(([id, label]) =>
+    `<button class="filter-chip ${eventFilter === id ? 'active' : ''}" data-act="evFilter" data-id="${esc(id)}">${esc(label)}</button>`
+  ).join('');
+}
+
+function paintHappeningBoard() {
+  const board = $('#happening-board');
+  if (!board) return;
+  const pool = happeningPool();
+  const events = curatedEvents(pool);
+  const pulling = !!(S.settings.city && !pool.length && !feedRun?.error && !feedRun?.done);
+  const fp = [
+    eventFilter,
+    events.map(e => e.id).join(','),
+    pulling ? 'shimmer' : '',
+    !pool.length ? (feedRun?.error || 'empty') : '',
+  ].join('|');
+  if (board.dataset.fp === fp) return;
+  const seen = new Set((board.dataset.ids || '').split(',').filter(Boolean));
+  board.innerHTML = happeningBoardHtml({ rise: false, seen });
+  board.dataset.fp = fp;
+  board.dataset.ids = events.map(e => e.id).join(',');
+}
+
+function paintHappeningVenues() {
+  const host = $('#happening-venues');
+  if (!host) return;
+  const ids = happeningVenues().map(v => v.id).join(',');
+  if (host.dataset.fp === ids) return;
+  host.dataset.fp = ids;
+  host.innerHTML = happeningVenuesHtml();
+}
+
+function paintHappeningIdeas() {
+  const host = $('#happening-ideas');
+  if (!host) return;
+  const ids = eventFilter + ':' + happeningIdeas().map(i => i.id).join(',');
+  if (host.dataset.fp === ids) return;
+  host.dataset.fp = ids;
+  host.innerHTML = happeningIdeasHtml();
+}
+
+function paintHappening() {
+  if (route !== 'today' || !$('#happening')) return;
+  paintHappeningStatus();
+  paintHappeningFilters();
+  paintHappeningBoard();
+  paintHappeningIdeas();
+  paintHappeningVenues();
+}
+
+let happenPaintTimer = null;
+function scheduleHappeningPaint() {
+  paintHappeningStatus();
+  if (happenPaintTimer) return;
+  happenPaintTimer = setTimeout(() => {
+    happenPaintTimer = null;
+    paintHappening();
+  }, 320);
 }
 
 function rerenderHappening() {
-  const el = $('#happening');
-  if (!el) { VIEWS.today(); return; }
-  const y = scrollY;
-  el.outerHTML = happeningSection();
-  scrollTo({ top: y, behavior: 'instant' });
+  if (route !== 'today') return;
+  if (!$('#happening')) return;
+  paintHappening();
 }
 
 function dismissCard(el, done) {
@@ -4106,6 +4306,17 @@ const ACTIONS = {
   evRefresh() {
     feedAutoKey = null;
     ensureHappening({ force: true });
+  },
+  hiPlan(id) {
+    const idea = (S.ideas || []).find(x => x.id === id);
+    if (!idea) return;
+    openPlanDialog({
+      date: todayIso(),
+      time: '19:00',
+      title: idea.title,
+      place: [idea.title, idea.hood].filter(Boolean).join(', '),
+      notes: idea.notes || '',
+    });
   },
   vnSave(id) { applyTasteFeedback('venue', id, 'save'); persist(); rerenderHappening(); toast('Noted — more like this ✦'); },
   vnDismiss(id) {

@@ -328,10 +328,13 @@ function buildPrompt(body) {
     ].filter(l => l !== null).join('\n');
   }
 
-  const count = mode === 'weekend' ? 5 : 4;
-  const window = mode === 'weekend'
-    ? `the upcoming weekend (${dates.join(', ') || date})`
-    : `${date}`;
+  const happening = mode === 'happening';
+  const count = happening ? 16 : mode === 'weekend' ? 5 : 4;
+  const window = happening
+    ? `the next week (${dates.join(', ') || date})`
+    : mode === 'weekend'
+      ? `the upcoming weekend (${dates.join(', ') || date})`
+      : `${date}`;
 
   // Grounded candidates come from the user's taste engine (newsletters, IG,
   // openings scans, availability checks) — already matched to their profile.
@@ -358,7 +361,9 @@ function buildPrompt(body) {
   const lines = [
     `You are Orbit's concierge. ${firstName ? firstName + ' lives' : 'The user lives'} in ${city}.`,
     '',
-    `Plan ${window}. Return exactly ${count} ${mode === 'weekend' ? 'itinerary blocks that flow together across the weekend' : 'options for the evening'}.`,
+    happening
+      ? `Fill a browseable "what's on" board for ${window}. Return exactly ${count} real events, shows, openings, tables, or outdoor things people can actually do — spread across the dates, 2–4 per day, mixed kinds and neighborhoods.`
+      : `Plan ${window}. Return exactly ${count} ${mode === 'weekend' ? 'itinerary blocks that flow together across the weekend' : 'options for the evening'}.`,
     '',
     'THEIR PROFILE',
     `- Into: ${interests.join(', ') || 'not specified'}`,
@@ -383,9 +388,11 @@ function buildPrompt(body) {
     '3. No generic filler ("go to a nice restaurant"). Name the place.',
     '4. Bias toward their interests and neighborhoods, but include one thing that pleasantly surprises them.',
     '5. If the forecast is bad, favor indoor picks and set "indoor" accordingly.',
-    mode === 'weekend'
-      ? '6. Blocks should span the weekend and vary in energy: something social, something calm, something worth telling people about. Pace them so the weekend feels designed, not stacked.'
-      : '6. Vary price and energy across the options so there is a real choice to make.',
+    happening
+      ? '6. Spread picks across the dates. No more than four on one night. Mix music, food, outdoors, comedy, art, nightlife. Skip anything already over or too generic to book.'
+      : mode === 'weekend'
+        ? '6. Blocks should span the weekend and vary in energy: something social, something calm, something worth telling people about. Pace them so the weekend feels designed, not stacked.'
+        : '6. Vary price and energy across the options so there is a real choice to make.',
     '',
     'OUTPUT FORMAT — this matters',
     `Emit one JSON object per line (NDJSON). No markdown fences, no wrapper array, no commentary before or after. Each line must be a complete, parseable JSON object of exactly this shape:`,

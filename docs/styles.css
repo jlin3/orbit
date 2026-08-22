@@ -1041,6 +1041,13 @@ html.has-itin [data-route="weekend"] main { padding-bottom: calc(140px + var(--s
 @keyframes ev-leave {
   to { opacity: 0; transform: translateX(36px) scale(0.96); filter: blur(4px); }
 }
+.ev-card.ev-arrive {
+  animation: ev-arrive 0.32s var(--ease-out) both;
+}
+@keyframes ev-arrive {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
 
 .ev-status {
   display: flex; align-items: center; gap: 11px;

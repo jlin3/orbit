@@ -1,5 +1,5 @@
 // Orbit service worker — app-shell cache, network-first for HTML
-const VERSION = 'orbit-v8-happening-feed';
+const VERSION = 'orbit-v9-happening-stable';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg', './seed.json'];
 
 self.addEventListener('install', e => {
