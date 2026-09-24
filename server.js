@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
+const Digest = require('./docs/digest.js');
 
 const PORT = process.env.PORT || 4747;
 const ROOT = __dirname;
@@ -47,28 +48,10 @@ function saveState(state) {
   fs.renameSync(tmp, DATA_FILE);
 }
 
-function cadenceFor(person, settings) {
-  if (person.type === 'dating' && person.stage && person.stage !== 'ended') {
-    return settings.datingCadence || 5;
-  }
-  return settings.tiers[person.tier] || null;
-}
-
 function addDays(iso, days) {
   const d = new Date(iso + 'T12:00:00');
   d.setDate(d.getDate() + days);
   return localISO(d);
-}
-
-function daysBetween(fromIso, toIso) {
-  return Math.round((new Date(toIso + 'T12:00:00') - new Date(fromIso + 'T12:00:00')) / 86400000);
-}
-
-function nextBirthday(bday) { // "MM-DD" → next occurrence as YYYY-MM-DD
-  if (!/^\d{2}-\d{2}$/.test(bday || '')) return null;
-  const t = localISO();
-  const iso = `${t.slice(0, 4)}-${bday}`;
-  return iso >= t ? iso : `${+t.slice(0, 4) + 1}-${bday}`;
 }
 
 // ---------- taste engine ----------
@@ -91,47 +74,6 @@ function buzz(venue, today) {
     .filter(s => (s.date || today) >= cutoff)
     .map(s => normKey(s.name)));
   return names.size;
-}
-
-function tasteScore(tags, state) {
-  const interests = new Set((state.settings.interests || []).map(normKey));
-  const weights = state.settings.tasteWeights || {};
-  let score = 0;
-  for (const t of tags || []) {
-    const k = normKey(t);
-    score += (interests.has(k) ? 1 : 0.2) * (weights[k] != null ? weights[k] : 1);
-  }
-  return score;
-}
-
-function hoodBonus(hood, state) {
-  const mine = ((state.settings.profile || {}).neighborhoods || []).map(normKey);
-  const h = normKey(hood);
-  return h && mine.some(m => m && (h.includes(m) || m.includes(h))) ? 1 : 0;
-}
-
-function nightBonus(dateIso, state) {
-  if (!dateIso) return 0;
-  const nights = (state.settings.profile || {}).nights || [];
-  const day = new Date(dateIso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
-  return nights.includes(day) ? 0.5 : 0;
-}
-
-function scoreEvent(e, state) {
-  return tasteScore(e.tags, state)
-    + hoodBonus(e.neighborhood || e.venue, state)
-    + nightBonus(e.date, state)
-    + Math.min((e.sources || []).length, 3) * 0.3
-    + (e.status === 'saved' ? 2 : 0);
-}
-
-function scoreVenue(v, state, today) {
-  const novelty = { 'opening-soon': 0.75, new: 0.75, hot: 0.5 }[v.status] || 0;
-  return tasteScore(v.tags, state)
-    + hoodBonus(v.hood, state)
-    + Math.min(buzz(v, today), 4) * 0.5
-    + novelty
-    + (v.flag === 'saved' ? 2 : 0);
 }
 
 // Merge new candidates instead of overwriting. A re-mention of something we
@@ -254,177 +196,23 @@ function ingestPlans(state, plans) {
   return out;
 }
 
-function suggestIdea(person, ideas) {
-  const wantBest = person.type === 'dating' ? ['date', 'either'] : ['friends', 'either'];
-  const pool = ideas.filter(i => wantBest.includes(i.best));
-  const shared = pool.filter(i => i.tags.some(t => (person.interests || []).includes(t)));
-  const list = shared.length ? shared : pool;
-  return list.find(i => i.favorite) || list[0] || null;
-}
-
-function weekSuggestions(state) {
-  const prof = (state.settings.profile || {});
-  const nights = prof.nights && prof.nights.length ? prof.nights : ['Thu', 'Fri', 'Sat'];
-  const dayName = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
-  const planned = new Set((state.plans || []).filter(pl => pl.status !== 'done').map(pl => pl.date));
-  const tierW = p => p.type === 'dating' ? 3 : ({ inner: 3, close: 2, warm: 1 }[p.tier] || 1);
-  const today = localISO();
-  const cands = state.people
-    .filter(p => p.tier !== 'archived' && p.tier !== 'unsorted')
-    .map(p => {
-      const cad = cadenceFor(p, state.settings);
-      if (!cad) return null;
-      const overdue = daysBetween(addDays(p.lastContact || p.createdAt || today, cad), today);
-      return { p, overdue };
-    })
-    .filter(x => x && !(x.p.snoozedUntil && x.p.snoozedUntil > today))
-    .sort((a, b) => (b.overdue * tierW(b.p)) - (a.overdue * tierW(a.p)));
-  const used = new Set();
-  const out = [];
-  for (let i = 1; i <= 14 && out.length < 3; i++) {
-    const d = addDays(today, i);
-    if (!nights.includes(dayName(d)) || planned.has(d)) continue;
-    const c = cands.find(x => !used.has(x.p.id));
-    if (!c) break;
-    used.add(c.p.id);
-    const idea = suggestIdea(c.p, state.ideas || []);
-    out.push({ date: d, name: c.p.name, idea: idea ? `${idea.title} (${idea.hood || 'NYC'})` : null });
-  }
-  return out;
-}
-
-function computeDigest(state) {
-  const today = localISO();
-  const horizon = addDays(today, 7);
-
-  const due = [];
-  for (const p of state.people) {
-    if (p.tier === 'archived' || p.tier === 'unsorted') continue;
-    if (p.snoozedUntil && p.snoozedUntil > today) continue;
-    const cadence = cadenceFor(p, state.settings);
-    if (!cadence) continue;
-    const last = p.lastContact || p.createdAt || today;
-    const nextDue = addDays(last, cadence);
-    if (nextDue <= today) {
-      const idea = suggestIdea(p, state.ideas || []);
-      const thread = (p.threads || []).find(t => !t.done) || null;
-      due.push({
-        name: p.name, tier: p.tier, type: p.type, stage: p.stage || null,
-        overdueDays: daysBetween(nextDue, today),
-        lastContact: p.lastContact || null,
-        nextStep: p.nextStep || null,
-        interests: p.interests || [],
-        idea: idea ? idea.title : null,
-        thread: thread ? thread.text : null,
-      });
-    }
-  }
-  due.sort((a, b) => b.overdueDays - a.overdueDays);
-
-  const birthdays = state.people
-    .filter(p => p.tier !== 'archived' && p.tier !== 'unsorted')
-    .map(p => ({ name: p.name, date: nextBirthday(p.birthday) }))
-    .filter(b => b.date && daysBetween(today, b.date) <= 7)
-    .sort((a, b) => a.date.localeCompare(b.date));
-
-  const plans = (state.plans || [])
-    .filter(pl => pl.status !== 'done' && pl.date >= today && pl.date <= horizon)
-    .sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')))
-    .map(pl => ({
-      title: pl.title, date: pl.date, time: pl.time || null, place: pl.place || null,
-      people: pl.personIds.map(id => (state.people.find(p => p.id === id) || {}).name).filter(Boolean),
-    }));
-
-  const events = (state.events || [])
-    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today))
-    .sort((a, b) => scoreEvent(b, state) - scoreEvent(a, state))
-    .slice(0, 12);
-
-  const buzzing = (state.venues || [])
-    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
-    .sort((a, b) => scoreVenue(b, state, today) - scoreVenue(a, state, today))
-    .slice(0, 6)
-    .map(v => ({ ...v, buzz: buzz(v, today) }));
-
-  const toBook = (state.venues || [])
-    .filter(v => v.flag !== 'dismissed'
-      && ['restaurant', 'bar'].includes(v.kind)
-      && !(v.visited || []).some(d => d >= addDays(today, -60)))
-    .sort((a, b) => scoreVenue(b, state, today) - scoreVenue(a, state, today))
-    .slice(0, 5);
-
-  const datingNudges = state.people
-    .filter(p => p.type === 'dating' && p.stage && p.stage !== 'ended' && p.tier !== 'archived' && p.nextStep)
-    .map(p => ({ name: p.name, stage: p.stage, nextStep: p.nextStep }));
-
-  const lines = [];
-  lines.push(`# Orbit digest — ${today}`);
-  lines.push('');
-  lines.push('## Reach out today');
-  if (due.length === 0) lines.push('All caught up — nobody is overdue.');
-  for (const d of due) {
-    const label = d.type === 'dating' ? `dating · ${d.stage}` : d.tier;
-    lines.push(`- **${d.name}** (${label}) — ${d.overdueDays === 0 ? 'due today' : `${d.overdueDays}d overdue`}${d.lastContact ? `, last contact ${d.lastContact}` : ''}${d.thread ? `. 💭 ${d.thread}` : d.nextStep ? `. Next step: ${d.nextStep}` : d.idea ? `. Idea: ${d.idea}` : ''}`);
-  }
-  const sugs = weekSuggestions(state);
-  if (sugs.length) {
-    lines.push('');
-    lines.push('## Line up your week');
-    for (const s of sugs) lines.push(`- ${s.date} — **${s.name}**${s.idea ? ` · ${s.idea}` : ''}`);
-  }
-  if (birthdays.length) {
-    lines.push('');
-    lines.push('## Birthdays this week');
-    for (const b of birthdays) {
-      const inDays = daysBetween(today, b.date);
-      lines.push(`- 🎂 **${b.name}** — ${inDays === 0 ? 'TODAY' : `${b.date} (in ${inDays}d)`}`);
-    }
-  }
-  lines.push('');
-  lines.push('## Plans this week');
-  if (plans.length === 0) lines.push('Nothing on the calendar — pick someone above and plan something.');
-  for (const pl of plans) {
-    lines.push(`- ${pl.date}${pl.time ? ' ' + pl.time : ''} — **${pl.title}** with ${pl.people.join(', ') || '?'}${pl.place ? ` @ ${pl.place}` : ''}`);
-  }
-  if (datingNudges.length) {
-    lines.push('');
-    lines.push('## Dating next steps');
-    for (const n of datingNudges) lines.push(`- **${n.name}** (${n.stage}): ${n.nextStep}`);
-  }
-  lines.push('');
-  lines.push(`## Happening in ${state.settings.city || 'New York'}`);
-  if (events.length === 0) lines.push('No events loaded yet — the daily agent fills these in.');
-  for (const e of events) {
-    lines.push(`- ${e.date ? e.date + ' — ' : ''}**${e.title}**${e.venue ? ` @ ${e.venue}` : ''}${e.url ? ` (${e.url})` : ''}`);
-  }
-  if (buzzing.length) {
-    lines.push('');
-    lines.push('## New & buzzing');
-    for (const v of buzzing) {
-      const label = v.status === 'opening-soon' ? 'opening soon' : v.status;
-      lines.push(`- **${v.name}**${v.hood ? ` (${v.hood})` : ''} — ${label}${v.buzz > 1 ? ` · ${v.buzz} sources this month` : ''}${v.notes ? `. ${v.notes}` : ''}${v.url ? ` (${v.url})` : ''}`);
-    }
-  }
-  if (toBook.length) {
-    lines.push('');
-    lines.push('## Restaurants to book');
-    for (const v of toBook) {
-      lines.push(`- **${v.name}**${v.hood ? ` (${v.hood})` : ''}${v.availability ? ` — ${v.availability}` : ''}${v.bookVia ? ` — book: ${v.bookVia}` : ''}`);
-    }
-  }
-
+// The digest itself lives in docs/digest.js so the app's preview and the
+// email the agent sends are the same thing.
+function computeDigest(state, opts = {}) {
+  const deliveries = Digest.buildDeliveries(state, opts);
+  const owner = deliveries.find(d => d.edition === 'owner')
+    || { edition: 'owner', to: null, ...Digest.renderEmail(Digest.buildDigest(state, opts)) };
   return {
-    date: today,
+    date: localISO(),
     email: state.settings.email || null,
     interests: state.settings.interests || [],
-    reachOut: due,
-    birthdays,
-    plans,
-    datingNudges,
-    events,
-    buzzing,
-    toBook,
-    markdown: lines.join('\n'),
+    // One entry per email to send. The owner edition only ever goes to the
+    // owner; guests get the city edition. Send each as its own message.
+    deliveries,
+    subject: owner.subject,
+    text: owner.text,
+    html: owner.html,
+    markdown: owner.text, // legacy field for older agents
   };
 }
 
@@ -601,6 +389,17 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/digest' && req.method === 'GET') {
       return sendJSON(res, 200, computeDigest(loadState()));
+    }
+    if (p === '/api/digest.html' && req.method === 'GET') {
+      // Preview an edition exactly as it lands: ?edition=guest&name=Izzy
+      const state = loadState();
+      const edition = url.searchParams.get('edition') === 'guest' ? 'guest' : 'owner';
+      const guest = edition === 'guest'
+        ? ((state.settings.digestGuests || [])[0] || { name: url.searchParams.get('name') || '' })
+        : null;
+      const mail = Digest.renderEmail(Digest.buildDigest(state, { edition, guest }));
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(mail.html);
     }
     if (p === '/api/calendar.ics' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8' });

@@ -1,6 +1,6 @@
 // Orbit service worker — app-shell cache, network-first for HTML
-const VERSION = 'orbit-v9-happening-stable';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg', './seed.json'];
+const VERSION = 'orbit-v10-digest';
+const ASSETS = ['./', './index.html', './styles.css', './app.js', './digest.js', './manifest.webmanifest', './icon.svg', './seed.json'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
