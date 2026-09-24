@@ -72,8 +72,16 @@ on-device.
   to start their own Orbit. Nothing is uploaded and no account exists to create.
 - **Digest** — daily 8am agent (Claude scheduled task on the Mac) runs the full pipeline
   (newsletters → reservations → Instagram → openings → events → availability → feed
-  publish) and delivers the digest — including **New & buzzing** and **Restaurants to
-  book** — by **Slack webhook** and/or email.
+  publish) and delivers the morning email, by email and/or **Slack webhook**. It comes in
+  two editions, both rendered by [`docs/digest.js`](docs/digest.js):
+  - **Yours:** the three people who matter most today, each with one concrete move (an
+    open thread, a next step, or a real event this week that fits their interests),
+    what's on your calendar, about five picks worth leaving the house for, and tables
+    worth booking. Empty sections don't render.
+  - **City edition:** for friends you share Orbit with (Orbit → Digest). It carries
+    only the picks and new spots, never your people, dates, or plans.
+
+  Delivery contract for the agent: [agents/digest](agents/digest).
 
 ## Design
 
@@ -88,7 +96,8 @@ pipeline. `prefers-reduced-motion` disables the starfield and all motion. Instal
 
 ## API (local mode, used by the daily agent)
 
-- `GET  /api/digest` · `POST /api/ingest` · `POST /api/feedback` · `POST /api/plans/ingest`
+- `GET  /api/digest` (per-recipient `deliveries`: subject + HTML + text) · `GET /api/digest.html?edition=owner|guest`
+- `POST /api/ingest` · `POST /api/feedback` · `POST /api/plans/ingest`
 - `POST /api/events` (legacy overwrite) · `GET /api/calendar.ics`
 - `GET  /api/connections` · `POST /api/import/macos-contacts` · `POST /api/setup/launchagent`
 - `GET/PUT /api/state`

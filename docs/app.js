@@ -588,7 +588,9 @@ function dueInfo(p) {
     ? (S.settings.datingCadence || 5)
     : S.settings.tiers[p.tier];
   if (!cadence) return null;
-  const last = p.lastContact || p.createdAt || todayIso();
+  // Read the log, not just lastContact — imports stamp lastContact with the
+  // import day, which made everyone with imported history look fresh.
+  const last = OrbitDigest.lastTouch(p) || p.createdAt || todayIso();
   const nextDue = addDays(last, cadence);
   const overdue = daysBetween(nextDue, todayIso());
   const snoozed = !!(p.snoozedUntil && p.snoozedUntil > todayIso());
@@ -3175,89 +3177,64 @@ function markPlanDone(id) {
 }
 
 // ---------- DIGEST ----------
-function buildDigestMarkdown() {
-  const today = todayIso();
-  const lines = [`# Orbit digest — ${today}`, '', '## Reach out today'];
-  const due = duePeople();
-  if (!due.length) lines.push('All caught up — nobody is overdue.');
-  for (const { p, d } of due) {
-    const label = p.type === 'dating' ? `dating · ${p.stage}` : p.tier;
-    const idea = suggestIdea(p);
-    const th = openThread(p);
-    lines.push(`- **${p.name}** (${label}) — ${d.overdue === 0 ? 'due today' : `${d.overdue}d overdue`}${p.lastContact ? `, last contact ${p.lastContact}` : ''}${th ? `. 💭 ${th.text}` : p.nextStep ? `. Next step: ${p.nextStep}` : idea ? `. Idea: ${idea.title}` : ''}`);
-  }
-  const sugs = planSuggestions(3);
-  if (sugs.length) {
-    lines.push('', '## Line up your week');
-    for (const s of sugs) lines.push(`- ${fmtDay(s.date)} — **${s.person.name}**${s.idea ? ` · ${s.idea.title} (${s.idea.hood || 'NYC'})` : ''}`);
-  }
-  const bdays = activePeople()
-    .map(p => ({ name: p.name, date: nextBirthdayIso(p.birthday) }))
-    .filter(b => b.date && daysBetween(today, b.date) <= 7)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  if (bdays.length) {
-    lines.push('', '## Birthdays this week');
-    for (const b of bdays) lines.push(`- 🎂 **${b.name}** — ${daysBetween(today, b.date) === 0 ? 'TODAY' : `${b.date} (in ${daysBetween(today, b.date)}d)`}`);
-  }
-  lines.push('', '## Plans this week');
-  const plans = (S.plans || []).filter(pl => pl.status !== 'done' && pl.date >= today && pl.date <= addDays(today, 7))
-    .sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
-  if (!plans.length) lines.push('Nothing on the calendar — pick someone above and plan something.');
-  for (const pl of plans) lines.push(`- ${pl.date}${pl.time ? ' ' + pl.time : ''} — **${pl.title}** with ${pl.personIds.map(id => person(id)?.name).filter(Boolean).join(', ') || '?'}${pl.place ? ` @ ${pl.place}` : ''}`);
-  const nudges = S.people.filter(p => p.type === 'dating' && p.stage && p.tier !== 'archived' && p.nextStep);
-  if (nudges.length) {
-    lines.push('', '## Dating next steps');
-    for (const n of nudges) lines.push(`- **${n.name}** (${n.stage}): ${n.nextStep}`);
-  }
-  lines.push('', `## Happening in ${S.settings.city || 'your city'}`);
-  const events = (S.events || [])
-    .filter(e => e.status !== 'dismissed' && (!e.date || e.date >= today))
-    .sort((a, b) => scoreEventClient(b) - scoreEventClient(a))
-    .slice(0, 12);
-  if (!events.length) lines.push('No events loaded yet — the daily agent fills these in.');
-  for (const e of events) lines.push(`- ${e.date ? e.date + ' — ' : ''}**${e.title}**${e.venue ? ` @ ${e.venue}` : ''}${e.url ? ` (${e.url})` : ''}`);
-  const buzzing = (S.venues || [])
-    .filter(v => v.flag !== 'dismissed' && ['opening-soon', 'new', 'hot'].includes(v.status))
-    .sort((a, b) => scoreVenueClient(b) - scoreVenueClient(a))
-    .slice(0, 6);
-  if (buzzing.length) {
-    lines.push('', '## New & buzzing');
-    for (const v of buzzing) {
-      const b = venueBuzz(v);
-      lines.push(`- **${v.name}**${v.hood ? ` (${v.hood})` : ''} — ${v.status === 'opening-soon' ? 'opening soon' : v.status}${b > 1 ? ` · ${b} sources this month` : ''}${v.bookVia ? ` — book: ${v.bookVia}` : ''}`);
-    }
-  }
-  return lines.join('\n');
+// The email itself is built by digest.js — the exact code the 8am agent uses
+// to send it — so this preview is what actually lands.
+let digestEdition = 'owner';
+
+function digestGuests() {
+  return (S.settings.digestGuests || []).filter(g => g && g.email);
 }
 
-VIEWS.digest = async function renderDigest() {
-  let md, email = S.settings.email, interests = S.settings.interests || [];
-  if (LOCAL) {
-    try {
-      const dg = await (await fetch('api/digest')).json();
-      md = dg.markdown; email = dg.email; interests = dg.interests;
-    } catch { md = buildDigestMarkdown(); }
-  } else {
-    md = buildDigestMarkdown();
-  }
-  const html = md
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/^# (.*)$/gm, '<strong style="font-size:19px;font-family:var(--serif)">$1</strong>')
-    .replace(/^## (.*)$/gm, '<strong style="font-size:15.5px">$1</strong>')
-    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/^- /gm, '&nbsp;&nbsp;•&nbsp; ');
+function digestMail(edition) {
+  const guest = edition === 'guest' ? (digestGuests()[0] || { name: '' }) : null;
+  return OrbitDigest.renderEmail(OrbitDigest.buildDigest(S, { edition, guest }));
+}
+
+// "Izzy <izzy@example.com>, sam@example.com" ⇄ [{name, email}]
+function parseGuests(str) {
+  return String(str || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean).map(x => {
+    const m = /^(.*?)\s*<([^>]+)>$/.exec(x);
+    return m ? { name: m[1].replace(/^["']|["']$/g, '').trim(), email: m[2].trim() } : { name: '', email: x };
+  }).filter(g => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(g.email));
+}
+const formatGuests = gs => gs.map(g => g.name ? `${g.name} <${g.email}>` : g.email).join(', ');
+
+VIEWS.digest = function renderDigest() {
+  const guests = digestGuests();
+  if (digestEdition === 'guest' && !guests.length) digestEdition = 'owner';
+  const mail = digestMail(digestEdition);
+  const guestTab = guests[0]?.name ? `${esc(guests[0].name)}’s edition` : 'City edition';
   $('#view').innerHTML = `
     <div class="toolbar" style="margin-top:16px">
       <h1 style="flex:1" class="rise">Daily digest</h1>
       <button class="btn rise" data-act="copyDigest">Copy as text</button>
     </div>
-    <p class="muted small rise" style="--i:1;margin-bottom:14px">This is what lands in your inbox each morning (${esc(email || 'no email set')}). Generated live from your people, plans, and the NYC events your agent pulls in.</p>
-    <div class="digest-pre rise" style="--i:2">${html}</div>
-    <div class="card digest-note small muted rise" style="--i:3">
-      <b style="color:var(--ink)">How it works:</b> a scheduled agent on your Mac runs every morning at 8 — it searches NYC events matching your profile (${interests.map(esc).join(', ')}), loads them into Orbit, then delivers this digest by email or Slack. Manage delivery in <a href="#connect">Connect</a>.
+    <p class="muted small rise" style="--i:1;margin-bottom:14px;max-width:640px">What lands at 8am. Your edition goes only to you (${esc(S.settings.email || 'no email set')}). People you share Orbit with get the city edition: the week’s picks and new spots, never your people, dates, or plans.</p>
+    <div class="digest-bar rise" style="--i:2">
+      <div class="seg">
+        <button class="seg-btn ${digestEdition === 'owner' ? 'on' : ''}" data-act="digestEdition" data-id="owner">Your edition</button>
+        <button class="seg-btn ${digestEdition === 'guest' ? 'on' : ''}" data-act="digestEdition" data-id="guest">${guestTab}</button>
+      </div>
+      <div class="digest-subject small"><span class="faint">Subject</span> ${esc(mail.subject)}</div>
+    </div>
+    <iframe class="digest-frame rise" style="--i:3" title="Digest preview" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <div class="card digest-note rise" style="--i:4">
+      <label class="field" style="margin:0">Also send the city edition to
+        <input id="digest-guests" value="${esc(formatGuests(guests))}" placeholder="Izzy <izzy@example.com>, sam@example.com" autocomplete="off">
+      </label>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <button class="btn" data-act="saveDigestGuests">Save</button>
+        <span class="small faint">Each person gets their own email. Nobody sees the others’ addresses.</span>
+      </div>
     </div>
   `;
-  $('#view').dataset.digestMd = md;
+  const frame = $('.digest-frame');
+  const fit = () => {
+    try { frame.style.height = frame.contentDocument.documentElement.scrollHeight + 'px'; } catch {}
+  };
+  frame.addEventListener('load', () => { fit(); setTimeout(fit, 400); });
+  frame.srcdoc = mail.html.replace('<head>', '<head><base target="_blank">');
+  $('#view').dataset.digestText = mail.text;
 };
 
 // ---------- CONNECT ----------
@@ -4641,8 +4618,22 @@ const ACTIONS = {
   },
   removeSamples() { removeSamples(); },
   copyDigest() {
-    navigator.clipboard.writeText($('#view').dataset.digestMd || '');
+    navigator.clipboard.writeText($('#view').dataset.digestText || '');
     toast('Digest copied');
+  },
+  digestEdition(id) {
+    if (id === 'guest' && !digestGuests().length) { toast('Add someone below first'); $('#digest-guests')?.focus(); return; }
+    digestEdition = id;
+    render();
+  },
+  saveDigestGuests() {
+    const raw = $('#digest-guests').value;
+    const list = parseGuests(raw);
+    if (raw.trim() && !list.length) { toast('Couldn’t read any email addresses there'); return; }
+    S.settings.digestGuests = list;
+    if (!list.length) digestEdition = 'owner';
+    save();
+    toast(list.length ? `City edition → ${list.map(g => g.name || g.email).join(', ')}` : 'City edition off');
   },
   toggleGmail() {
     S.settings.connections.gmail = !S.settings.connections.gmail;
